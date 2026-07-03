@@ -166,6 +166,66 @@ def get_now_string():
     return datetime.now(TIMEZONE).strftime("%d-%m-%Y %H:%M:%S")
 
 
+def duration_to_seconds(duration):
+    """
+    Obsluguje formaty:
+    00:00:00
+    0:00:00
+    00:00
+    15
+    """
+
+    duration = str(duration).strip()
+
+    if not duration:
+        return None
+
+    try:
+        if ":" not in duration:
+            return int(float(duration))
+
+        parts = duration.split(":")
+        parts = [int(part.strip()) for part in parts]
+
+        if len(parts) == 3:
+            hours, minutes, seconds = parts
+            return hours * 3600 + minutes * 60 + seconds
+
+        if len(parts) == 2:
+            minutes, seconds = parts
+            return minutes * 60 + seconds
+
+        return None
+
+    except Exception:
+        return None
+
+
+def is_zero_duration(duration):
+    seconds = duration_to_seconds(duration)
+
+    if seconds is None:
+        return False
+
+    return seconds == 0
+
+
+def is_missed_call_cdr(cdr):
+    """
+    Nieodebrane rozpoznajemy po:
+    1. final_number jest jednym z naszych numerow
+    2. duration = 0
+
+    Sam final_number NIE wystarcza, bo przy odebranym polaczeniu direct
+    final_number tez jest np. 526 i wtedy robilo falszywe missed calle.
+    """
+
+    final_number = cdr["final_number"]
+    duration = cdr["duration"]
+
+    return final_number in MISSED_CALL_FINAL_DNS and is_zero_duration(duration)
+
+
 def get_connection_duration(start_time):
     if not start_time:
         return "brak danych"
@@ -610,9 +670,11 @@ def handle_cdr_line(line: str):
         log("SPOZA IT", line)
         return
 
-    is_missed_call = cdr["final_number"] in MISSED_CALL_FINAL_DNS
+    is_missed_call = is_missed_call_cdr(cdr)
 
     if is_missed_call:
+        log("CDR TYPE", f"Nieodebrane. duration={cdr['duration']}, final_number={cdr['final_number']}, final_name={cdr['final_name']}")
+
         if not is_missed_call_ticket_time():
             log("POMINIETO GLPI", "Nieodebrane polaczenie poza godzinami 08:00-20:00. Nie tworze ticketa i nie zapisuje do bazy.")
             return
@@ -630,6 +692,8 @@ def handle_cdr_line(line: str):
             log("GLPI ERROR", f"Nieoczekiwany blad przy nieodebranym polaczeniu: {type(e).__name__}: {e}")
 
         return
+
+    log("CDR TYPE", f"Odebrane. duration={cdr['duration']}, final_number={cdr['final_number']}, final_name={cdr['final_name']}")
 
     record_id = save_it_cdr(cdr)
 

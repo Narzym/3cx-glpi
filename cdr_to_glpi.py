@@ -253,7 +253,8 @@ def create_it_cdr_table(cursor):
             glpi_ticket_id TEXT,
             glpi_status_code INTEGER,
             glpi_error TEXT,
-            glpi_requester_user_id TEXT
+            glpi_requester_user_id TEXT,
+            glpi_location_id TEXT
         )
     ''')
 
@@ -266,6 +267,17 @@ def create_glpi_users_table(cursor):
             full_name TEXT,
             first_name TEXT,
             last_name TEXT
+        )
+    ''')
+
+
+def create_glpi_locations_table(cursor):
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS glpi_locations (
+            glpi_location_id INTEGER PRIMARY KEY,
+            room_number TEXT,
+            name TEXT,
+            full_path TEXT
         )
     ''')
 
@@ -298,6 +310,7 @@ def init_db():
     ''')
 
     create_glpi_users_table(cursor)
+    create_glpi_locations_table(cursor)
 
     default_limit = normalize_cdr_limit_value(cfg.CDR_MAX_RECORDS_DEFAULT)
     cursor.execute('''
@@ -419,6 +432,17 @@ def reset_glpi_users():
     conn.close()
 
 
+def reset_glpi_locations():
+    conn = db_connect()
+    cursor = conn.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS glpi_locations")
+    create_glpi_locations_table(cursor)
+
+    conn.commit()
+    conn.close()
+
+
 def save_it_cdr(cdr: dict):
     conn = db_connect()
     cursor = conn.cursor()
@@ -458,7 +482,7 @@ def save_it_cdr(cdr: dict):
     return record_id
 
 
-def mark_as_done(record_id, ticket_id, status_code, requester_user_id=None):
+def mark_as_done(record_id, ticket_id, status_code, requester_user_id=None, location_id=None):
     conn = db_connect()
     cursor = conn.cursor()
 
@@ -468,12 +492,14 @@ def mark_as_done(record_id, ticket_id, status_code, requester_user_id=None):
             glpi_ticket_id = ?,
             glpi_status_code = ?,
             glpi_error = NULL,
-            glpi_requester_user_id = ?
+            glpi_requester_user_id = ?,
+            glpi_location_id = ?
         WHERE id = ?
     ''', (
         str(ticket_id),
         status_code,
         str(requester_user_id) if requester_user_id else None,
+        str(location_id) if location_id else None,
         record_id
     ))
 
@@ -517,11 +543,18 @@ def get_db_stats():
     except sqlite3.Error:
         glpi_users_count = "schema?"
 
+    try:
+        cursor.execute("SELECT COUNT(*) FROM glpi_locations")
+        glpi_locations_count = cursor.fetchone()[0]
+    except sqlite3.Error:
+        glpi_locations_count = "schema?"
+
     conn.close()
 
     return {
         "cdr_count": cdr_count,
         "glpi_users_count": glpi_users_count,
+        "glpi_locations_count": glpi_locations_count,
         "cdr_max_records": get_cdr_max_records_label()
     }
 
@@ -970,7 +1003,11 @@ def resolve_caller_user_id(cdr):
 
     log("GLPI USER", f"Dopasowanie osoby dzwoniacej. from-no='{cdr.get('from_no')}', from-dispname='{caller_name}'")
 
-    user_id = find_glpi_user_in_cache(caller_name, "caller/from-dispname")
+    try:
+        user_id = find_glpi_user_in_cache(caller_name, "caller/from-dispname")
+    except Exception as e:
+        log("GLPI USER", f"Cache lookup FAIL: {type(e).__name__}: {e}. Zostawiam requester pusty i jade dalej.")
+        user_id = None
 
     if user_id:
         return user_id
@@ -981,7 +1018,11 @@ def resolve_caller_user_id(cdr):
         log("GLPI USER", f"Online GLPI fetch FAIL: {type(e).__name__}: {e}. Zostawiam requester pusty.")
         return None
 
-    user_id = find_glpi_user_in_cache(caller_name, "caller/from-dispname")
+    try:
+        user_id = find_glpi_user_in_cache(caller_name, "caller/from-dispname")
+    except Exception as e:
+        log("GLPI USER", f"Cache lookup po fetchu FAIL: {type(e).__name__}: {e}. Zostawiam requester pusty.")
+        return None
 
     if user_id:
         log("GLPI USER", f"Online match OK: '{caller_name}' -> GLPI user id={user_id}")
@@ -990,6 +1031,34 @@ def resolve_caller_user_id(cdr):
     log("GLPI USER", f"Nie znaleziono usera dla '{caller_name}' ani w cache, ani w GLPI. Zostawiam puste.")
     return None
 
+
+def resolve_caller_context(cdr):
+    """
+    Zwraca tuple: (caller_user_id, location_id).
+
+    Jesli from-dispname wyglada jak sala, np. 'sala 443', requester zostaje pusty,
+    a kod probuje ustawic lokalizacje ticketu po cache lokalizacji GLPI.
+    """
+
+    caller_name = cdr.get("caller_name") or ""
+    room_number = extract_room_number_from_text(caller_name)
+
+    if room_number and cfg.GLPI_SET_ROOM_AS_LOCATION:
+        log("GLPI LOCATION", f"from-dispname wyglada jak sala. from-dispname='{caller_name}', room_number='{room_number}'. Requester bedzie pusty.")
+
+        try:
+            location_id = resolve_location_id_by_room(room_number)
+        except Exception as e:
+            log("GLPI LOCATION", f"Dopasowanie lokalizacji FAIL: {type(e).__name__}: {e}. Ticket pojdzie bez lokalizacji.")
+            location_id = None
+
+        return None, location_id
+
+    try:
+        return resolve_caller_user_id(cdr), None
+    except Exception as e:
+        log("GLPI USER", f"Dopasowanie requestera wysypalo sie, ale NIE blokuje ticketu: {type(e).__name__}: {e}")
+        return None, None
 
 def resolve_owner_id(cdr):
     final_dn = cdr.get("final_dn")
@@ -1035,6 +1104,270 @@ def resolve_owner_id(cdr):
 
 
 # =========================
+# GLPI LOCATIONS CACHE
+# =========================
+
+def extract_room_number_from_text(value):
+    value = str(value or "").strip()
+
+    if not value:
+        return ""
+
+    ascii_value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii").lower()
+    normalized = normalize_name(value)
+
+    # CDR: sala 443 / Sala 443 / sala 443a
+    match = re.search(r"\bsala\s*([0-9]{1,5}[a-z]?)\b", normalized)
+    if match:
+        return match.group(1)
+
+    # GLPI path/name: 443 (Sala wykladowa)
+    match = re.search(r"\b([0-9]{1,5}[a-z]?)\s*\(\s*sala\b", ascii_value)
+    if match:
+        return match.group(1)
+
+    # Po normalizacji: 443 sala wykladowa
+    match = re.search(r"\b([0-9]{1,5}[a-z]?)\s+sala\b", normalized)
+    if match:
+        return match.group(1)
+
+    return ""
+
+
+def build_location_name(location):
+    name = first_non_empty(location.get("name"))
+    full_path = first_non_empty(
+        location.get("completename"),
+        location.get("complete_name"),
+        location.get("full_name"),
+        location.get("full_path")
+    )
+
+    if not full_path:
+        full_path = name
+
+    if not name:
+        name = full_path
+
+    return name, full_path
+
+
+def upsert_glpi_locations(locations, replace=False):
+    conn = db_connect()
+    cursor = conn.cursor()
+
+    if replace:
+        cursor.execute("DROP TABLE IF EXISTS glpi_locations")
+
+    create_glpi_locations_table(cursor)
+
+    inserted = 0
+
+    for location in locations:
+        try:
+            glpi_location_id = int(location.get("id"))
+        except Exception:
+            continue
+
+        name, full_path = build_location_name(location)
+        room_number = extract_room_number_from_text(f"{name} {full_path}")
+
+        if not name and not full_path:
+            continue
+
+        cursor.execute('''
+            INSERT INTO glpi_locations (
+                glpi_location_id,
+                room_number,
+                name,
+                full_path
+            )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(glpi_location_id) DO UPDATE SET
+                room_number = excluded.room_number,
+                name = excluded.name,
+                full_path = excluded.full_path
+        ''', (
+            glpi_location_id,
+            room_number,
+            name,
+            full_path
+        ))
+
+        inserted += 1
+
+    conn.commit()
+    conn.close()
+
+    return inserted
+
+
+def find_glpi_location_in_cache(room_number):
+    room_number = str(room_number or "").strip().lower()
+
+    if not room_number:
+        log("GLPI LOCATION", "Brak numeru sali, nie da sie dopasowac lokalizacji.")
+        return None
+
+    conn = db_connect()
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT glpi_location_id, room_number, name, full_path
+        FROM glpi_locations
+    ''')
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    matches = []
+
+    for glpi_location_id, cached_room, name, full_path in rows:
+        candidates = [cached_room, extract_room_number_from_text(name), extract_room_number_from_text(full_path)]
+        candidate_values = [str(candidate or "").strip().lower() for candidate in candidates if candidate]
+
+        if room_number in candidate_values:
+            matches.append((glpi_location_id, cached_room, name, full_path))
+
+    if len(matches) == 1:
+        glpi_location_id, cached_room, name, full_path = matches[0]
+        log("GLPI LOCATION", f"Cache hit: sala '{room_number}' -> location id={glpi_location_id}, name='{name}', path='{full_path}'")
+        return glpi_location_id
+
+    if len(matches) > 1:
+        log("GLPI LOCATION", f"Cache ambiguous: sala '{room_number}' pasuje do {len(matches)} lokalizacji: {matches}. Zostawiam lokalizacje pusta.")
+        return None
+
+    log("GLPI LOCATION", f"Cache miss: sala '{room_number}'.")
+    return None
+
+
+def fetch_glpi_locations():
+    session_token = None
+
+    try:
+        session_token = get_glpi_session_token()
+        locations = []
+        start = 0
+        page_size = cfg.GLPI_LOCATION_PAGE_SIZE
+
+        while True:
+            end = start + page_size - 1
+            url = glpi_url("Location")
+
+            headers = {
+                "Content-Type": "application/json",
+                "App-Token": cfg.GLPI_APP_TOKEN,
+                "Session-Token": session_token,
+                "Range": f"{start}-{end}"
+            }
+
+            params = {
+                "range": f"{start}-{end}",
+                "is_deleted": "0"
+            }
+
+            try:
+                response = requests.get(
+                    url,
+                    headers=headers,
+                    params=params,
+                    timeout=cfg.GLPI_HTTP_TIMEOUT
+                )
+            except requests.exceptions.RequestException as e:
+                raise GLPIRequestError(
+                    f"Blad polaczenia przy pobieraniu lokalizacji GLPI: {type(e).__name__}: {e}"
+                )
+
+            if response.status_code not in (200, 206):
+                raise GLPIRequestError(
+                    f"GLPI Location fetch error. HTTP {response.status_code} {response.reason}. Body: {get_response_text(response)}",
+                    response.status_code
+                )
+
+            try:
+                data = response.json()
+            except Exception as e:
+                raise GLPIRequestError(
+                    f"GLPI Location zwrocilo niepoprawny JSON. HTTP {response.status_code}. Error: {e}. Body: {get_response_text(response)}",
+                    response.status_code
+                )
+
+            if isinstance(data, dict):
+                data = data.get("data") or data.get("items") or []
+
+            if not isinstance(data, list):
+                raise GLPIRequestError(f"GLPI Location zwrocilo dziwny format: {type(data).__name__}")
+
+            locations.extend(data)
+
+            if len(data) < page_size or response.status_code == 200:
+                break
+
+            start += page_size
+
+            if start > 100000:
+                raise GLPIRequestError("Przerwano pobieranie lokalizacji GLPI: przekroczono 100000 rekordow")
+
+        return locations
+
+    finally:
+        kill_glpi_session(session_token)
+
+
+def refresh_glpi_locations_cache():
+    log("GLPI LOCATION", "Pobieram lokalizacje z GLPI do cache...")
+    locations = fetch_glpi_locations()
+
+    if locations:
+        log("GLPI LOCATION SAMPLE", "Przykladowy surowy payload jednej lokalizacji z GLPI:")
+        log("GLPI LOCATION SAMPLE", json.dumps(locations[0], ensure_ascii=False, indent=2))
+    else:
+        log("GLPI LOCATION SAMPLE", "GLPI nie zwrocilo zadnej lokalizacji.")
+
+    count = upsert_glpi_locations(locations, replace=True)
+    log("GLPI LOCATION", f"Zaktualizowano cache lokalizacji GLPI. Zapisano: {count}")
+    return count
+
+
+def fetch_and_cache_locations_silent():
+    locations = fetch_glpi_locations()
+    saved = upsert_glpi_locations(locations, replace=False)
+    log("GLPI LOCATION", f"Online GLPI fetch OK. Zapisano/odswiezono lokalizacje: {saved}")
+    return saved
+
+
+def resolve_location_id_by_room(room_number):
+    try:
+        location_id = find_glpi_location_in_cache(room_number)
+    except Exception as e:
+        log("GLPI LOCATION", f"Cache lookup FAIL: {type(e).__name__}: {e}. Probuje pobrac lokalizacje z GLPI.")
+        location_id = None
+
+    if location_id:
+        return location_id
+
+    try:
+        fetch_and_cache_locations_silent()
+    except Exception as e:
+        log("GLPI LOCATION", f"Online GLPI location fetch FAIL: {type(e).__name__}: {e}. Zostawiam lokalizacje pusta.")
+        return None
+
+    try:
+        location_id = find_glpi_location_in_cache(room_number)
+    except Exception as e:
+        log("GLPI LOCATION", f"Cache lookup po fetchu FAIL: {type(e).__name__}: {e}. Zostawiam lokalizacje pusta.")
+        return None
+
+    if location_id:
+        log("GLPI LOCATION", f"Online match OK: sala '{room_number}' -> location id={location_id}")
+        return location_id
+
+    log("GLPI LOCATION", f"Nie znaleziono lokalizacji dla sali '{room_number}'. Ticket pojdzie bez lokalizacji.")
+    return None
+
+
+# =========================
 # GLPI TICKETY
 # =========================
 
@@ -1056,7 +1389,17 @@ def apply_caller_to_payload(payload, caller_user_id, caller_name):
     return payload
 
 
-def build_missed_call_payload(cdr, caller_user_id=None):
+def apply_location_to_payload(payload, location_id, caller_name):
+    if not location_id:
+        return payload
+
+    input_data = payload.setdefault("input", {})
+    input_data["locations_id"] = location_id
+    log("GLPI LOCATION", f"Dodaje lokalizacje do ticketu: locations_id={location_id}, from-dispname='{caller_name}'")
+    return payload
+
+
+def build_missed_call_payload(cdr, caller_user_id=None, location_id=None):
     title = f"Nieodebrane Polaczenie od {cdr['from_no']}"
 
     content = (
@@ -1084,10 +1427,11 @@ def build_missed_call_payload(cdr, caller_user_id=None):
         }
     }
 
-    return apply_caller_to_payload(payload, caller_user_id, cdr.get("from_dispname"))
+    payload = apply_caller_to_payload(payload, caller_user_id, cdr.get("from_dispname"))
+    return apply_location_to_payload(payload, location_id, cdr.get("from_dispname"))
 
 
-def build_answered_call_payload(cdr, owner_id, caller_user_id=None):
+def build_answered_call_payload(cdr, owner_id, caller_user_id=None, location_id=None):
     title = f"Polaczenie telefoniczne od {cdr['from_no']}"
 
     content = (
@@ -1116,7 +1460,8 @@ def build_answered_call_payload(cdr, owner_id, caller_user_id=None):
         }
     }
 
-    return apply_caller_to_payload(payload, caller_user_id, cdr.get("from_dispname"))
+    payload = apply_caller_to_payload(payload, caller_user_id, cdr.get("from_dispname"))
+    return apply_location_to_payload(payload, location_id, cdr.get("from_dispname"))
 
 
 def post_glpi_ticket(payload):
@@ -1183,11 +1528,23 @@ def create_glpi_ticket(payload):
         no_recipient["input"].pop("users_id_recipient", None)
         attempts.append(("bez users_id_recipient", no_recipient))
 
+    if "locations_id" in original["input"]:
+        no_location = {"input": dict(original["input"])}
+        no_location["input"].pop("locations_id", None)
+        attempts.append(("bez locations_id", no_location))
+
     if "_users_id_requester" in original["input"] or "users_id_recipient" in original["input"]:
         no_caller = {"input": dict(original["input"])}
         no_caller["input"].pop("users_id_recipient", None)
         no_caller["input"].pop("_users_id_requester", None)
         attempts.append(("bez caller user fields", no_caller))
+
+    if "_users_id_requester" in original["input"] or "users_id_recipient" in original["input"] or "locations_id" in original["input"]:
+        plain = {"input": dict(original["input"])}
+        plain["input"].pop("users_id_recipient", None)
+        plain["input"].pop("_users_id_requester", None)
+        plain["input"].pop("locations_id", None)
+        attempts.append(("bez caller i location fields", plain))
 
     last_error = None
 
@@ -1231,7 +1588,7 @@ def handle_cdr_line(line: str):
         return
 
     is_missed_call = is_missed_call_cdr(cdr)
-    caller_user_id = resolve_caller_user_id(cdr)
+    caller_user_id, location_id = resolve_caller_context(cdr)
 
     if is_missed_call:
         log("CDR TYPE", f"Nieodebrane. duration={cdr['duration']}, to-no={cdr['to_no']}, final-dn={cdr['final_dn']}, final-dispname={cdr['final_dispname']}, from-dispname={cdr['from_dispname']}")
@@ -1240,11 +1597,11 @@ def handle_cdr_line(line: str):
             log("POMINIETO GLPI", "Nieodebrane polaczenie poza godzinami 08:00-20:00. Nie tworze ticketa i nie zapisuje do bazy.")
             return
 
-        payload = build_missed_call_payload(cdr, caller_user_id)
+        payload = build_missed_call_payload(cdr, caller_user_id, location_id)
 
         try:
             status_code, ticket_id = create_glpi_ticket(payload)
-            log("GLPI SUCCESS", f"Utworzono ticket z nieodebranego polaczenia. Ticket ID: {ticket_id}. HTTP {status_code}. caller_user_id={caller_user_id}")
+            log("GLPI SUCCESS", f"Utworzono ticket z nieodebranego polaczenia. Ticket ID: {ticket_id}. HTTP {status_code}. caller_user_id={caller_user_id}. location_id={location_id}")
 
         except GLPIRequestError as e:
             log("GLPI ERROR", e)
@@ -1269,13 +1626,13 @@ def handle_cdr_line(line: str):
         mark_as_failed(record_id, None, error)
         return
 
-    payload = build_answered_call_payload(cdr, owner_id, caller_user_id)
+    payload = build_answered_call_payload(cdr, owner_id, caller_user_id, location_id)
 
     try:
         status_code, ticket_id = create_glpi_ticket(payload)
-        mark_as_done(record_id, ticket_id, status_code, caller_user_id)
+        mark_as_done(record_id, ticket_id, status_code, caller_user_id, location_id)
 
-        log("GLPI SUCCESS", f"Utworzono ticket z odebranego polaczenia. Ticket ID: {ticket_id}. HTTP {status_code}. owner_id={owner_id}. caller_user_id={caller_user_id}")
+        log("GLPI SUCCESS", f"Utworzono ticket z odebranego polaczenia. Ticket ID: {ticket_id}. HTTP {status_code}. owner_id={owner_id}. caller_user_id={caller_user_id}. location_id={location_id}")
 
     except GLPIRequestError as e:
         error_text = str(e)

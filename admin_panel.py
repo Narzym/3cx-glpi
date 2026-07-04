@@ -134,7 +134,7 @@ def draw_header(screen, subtitle=None, footer=True):
     safe_addstr(screen, 3, 11, status, attr)
 
     stats = core.get_db_stats()
-    stats_text = f"CDR: {stats['cdr_count']} | CDR limit: {stats['cdr_max_records']} | GLPI users cache: {stats['glpi_users_count']} | Service: {cfg.SERVICE_NAME}"
+    stats_text = f"CDR: {stats['cdr_count']} | CDR limit: {stats['cdr_max_records']} | GLPI users cache: {stats['glpi_users_count']} | GLPI locations cache: {stats['glpi_locations_count']} | Service: {cfg.SERVICE_NAME}"
     safe_addstr(screen, 4, 3, stats_text, curses.color_pair(COLOR_YELLOW))
 
     if subtitle:
@@ -345,6 +345,11 @@ def reset_glpi_users_db(screen):
         run_action_and_show(screen, "Wyzeruj baze userow GLPI", core.reset_glpi_users)
 
 
+def reset_glpi_locations_db(screen):
+    if confirm(screen, "Na pewno wyzerowac cache lokalizacji GLPI? To tez przebuduje tabele."):
+        run_action_and_show(screen, "Wyzeruj baze lokalizacji GLPI", core.reset_glpi_locations)
+
+
 def set_cdr_limit(screen):
     current = core.get_cdr_max_records_label()
     value = prompt_text(
@@ -365,6 +370,10 @@ def refresh_glpi_users(screen):
     run_action_and_show(screen, "Update bazy userow GLPI", core.refresh_glpi_users_cache)
 
 
+def refresh_glpi_locations(screen):
+    run_action_and_show(screen, "Update bazy lokalizacji GLPI", core.refresh_glpi_locations_cache)
+
+
 def show_db_stats(screen):
     stats = core.get_db_stats()
     text = (
@@ -372,6 +381,7 @@ def show_db_stats(screen):
         f"Rekordy CDR: {stats['cdr_count']}\n"
         f"Limit CDR: {stats['cdr_max_records']}\n"
         f"Userzy GLPI w cache: {stats['glpi_users_count']}\n"
+        f"Lokalizacje GLPI w cache: {stats['glpi_locations_count']}\n"
     )
     show_text(screen, "Statystyki bazy", text)
 
@@ -407,14 +417,23 @@ def format_sql_table(headers, rows):
 
 
 def query_sqlite(query):
-    conn = sqlite3.connect(cfg.DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(query)
-    rows = cursor.fetchall()
-    headers = [description[0] for description in cursor.description]
-    conn.close()
+    try:
+        conn = sqlite3.connect(cfg.DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        headers = [description[0] for description in cursor.description]
+        conn.close()
 
-    return f"Query: {query}\nLiczba rekordow: {len(rows)}\n\n" + format_sql_table(headers, rows)
+        return f"Query: {query}\nLiczba rekordow: {len(rows)}\n\n" + format_sql_table(headers, rows)
+
+    except sqlite3.Error as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+        return f"Query: {query}\nBLAD SQLite: {type(e).__name__}: {e}\n\nNajpewniej tabela ma stary schemat albo jeszcze nie istnieje. Wyzeruj/odswiez odpowiednia baze z menu."
 
 
 def show_cdr_records(screen):
@@ -424,6 +443,11 @@ def show_cdr_records(screen):
 def show_glpi_user_records(screen):
     query = "SELECT glpi_user_id, email, full_name, first_name, last_name FROM glpi_users ORDER BY glpi_user_id"
     show_text(screen, "Rekordy bazy userow GLPI", query_sqlite(query))
+
+
+def show_glpi_location_records(screen):
+    query = "SELECT glpi_location_id, room_number, name, full_path FROM glpi_locations ORDER BY room_number, glpi_location_id"
+    show_text(screen, "Rekordy bazy lokalizacji GLPI", query_sqlite(query))
 
 
 def show_logs(screen):
@@ -535,6 +559,10 @@ def main_menu_items():
             "handler": lambda screen: menu_loop(screen, "Opcje bazy userow GLPI", glpi_users_menu_items)
         },
         {
+            "label": "Opcje bazy lokalizacji GLPI",
+            "handler": lambda screen: menu_loop(screen, "Opcje bazy lokalizacji GLPI", glpi_locations_menu_items)
+        },
+        {
             "label": "Pokaz logi",
             "handler": show_logs
         },
@@ -604,6 +632,31 @@ def glpi_users_menu_items():
         {
             "label": "Wyzeruj baze userow GLPI",
             "handler": reset_glpi_users_db
+        },
+        {
+            "label": "Statystyki bazy",
+            "handler": show_db_stats
+        },
+        {
+            "label": "Wstecz",
+            "handler": lambda screen: "BACK"
+        }
+    ]
+
+
+def glpi_locations_menu_items():
+    return [
+        {
+            "label": "Pokaz rekordy",
+            "handler": show_glpi_location_records
+        },
+        {
+            "label": "Updatuj baze lokalizacji z GLPI",
+            "handler": refresh_glpi_locations
+        },
+        {
+            "label": "Wyzeruj baze lokalizacji GLPI",
+            "handler": reset_glpi_locations_db
         },
         {
             "label": "Statystyki bazy",

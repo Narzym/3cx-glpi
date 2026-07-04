@@ -1,28 +1,36 @@
-# 3cxToGLPI Admin Panel v10
+# 3cxToGLPI Admin Panel v11
 
-Zmiany v10:
+Zmiany w v11:
 
-- Usuniete stare kolumny z kodu bazy `glpi_users`:
-  - `normalized_full_name`
-  - `updated_at`
-- Aktualna tabela `glpi_users` ma tylko:
-  - `glpi_user_id`
-  - `email`
-  - `full_name`
-  - `first_name`
-  - `last_name`
-- Dopasowanie usera dalej dziala, ale normalizacja nazwy odbywa sie w kodzie w czasie porownania, a nie przez osobna kolumne w bazie.
-- Przy update cache userow GLPI tabela jest dropowana i tworzona od nowa.
+- requester jest dopasowywany z `from-dispname` do cache `glpi_users`
+- jesli requester nie znajdzie sie w cache ani w GLPI, ticket dalej tworzy sie normalnie z pustym requesterem
+- jezeli `from-dispname` wyglada jak sala, np. `sala 443`, requester zostaje pusty, a kod probuje ustawic `locations_id` w tickecie
+- dodana baza/cache lokalizacji GLPI: `glpi_locations`
+- dodane submenu panelu: `Opcje bazy lokalizacji GLPI`
+- przy update lokalizacji loguje jeden przykladowy surowy payload z GLPI
+- usuniete stare kolumny userow z kodu: `normalized_full_name`, `updated_at`
+- aktualna baza userow GLPI: `glpi_user_id`, `email`, `full_name`, `first_name`, `last_name`
+- aktualna baza lokalizacji GLPI: `glpi_location_id`, `room_number`, `name`, `full_path`
 
-Po podmianie plikow na serwerze odpal w panelu:
+Aktualna kolejnosc CDR:
+
+```text
+callid, duration, from-no, from-dispname, to-no, final-dn, final-dispname
+```
+
+Po podmianie plikow zalecane akcje w panelu:
 
 ```text
 Opcje bazy userow GLPI -> Wyzeruj baze userow GLPI
 Opcje bazy userow GLPI -> Updatuj baze userow z GLPI
+Opcje bazy lokalizacji GLPI -> Wyzeruj baze lokalizacji GLPI
+Opcje bazy lokalizacji GLPI -> Updatuj baze lokalizacji z GLPI
+Opcje bazy polaczen -> Wyzeruj baze polaczen
 ```
 
-Aktualny format CDR:
+Zmienne `.env`, opcjonalne:
 
-```text
-callid, duration, from-no, from-dispname, to-no, final-dn, final-dispname
+```env
+GLPI_LOCATION_PAGE_SIZE=200
+GLPI_SET_ROOM_AS_LOCATION=1
 ```

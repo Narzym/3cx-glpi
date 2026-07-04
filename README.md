@@ -1,81 +1,64 @@
 # 3cxToGLPI Admin Panel
 
-Ten pakiet NIE tworzy nowego systemd service. Panel podpina sie pod Twoj istniejacy service.
+Pakiet zawiera panel terminalowy do zarzadzania istniejaca usluga `cdr_to_glpi.service` oraz kod listenera 3CX CDR.
 
-Pliki:
+## Pliki
 
-- `config.py` - centralny config aplikacji.
-- `cdr_to_glpi.py` - listener CDR + logika GLPI.
-- `admin_panel.py` - terminalowy panel administracyjny.
+- `admin_panel.py` - terminalowy panel sterowania
+- `cdr_to_glpi.py` - listener CDR + logika GLPI
+- `config.py` - konfiguracja wyciagnieta z glownego skryptu
+- `README.md` - ten plik
 
-Nowy format CDR:
+## Zmiany v5
 
-```text
-callid, duration, from-no, from-dispname, to-no, final-dn, final-dispname
-```
+- widok logow pokazuje caly plik logow, nie tylko ostatnie 300 linii
+- widok logow startuje od dolu, czyli przy najnowszych wpisach
+- dolna belka w widoku tekstowym/logow jest jedna linijka
+- ostatnia linia logow nie jest juz zaslaniana przez menu
+- w widoku tekstowym dzialaja tylko:
+  - strzalka w gore
+  - strzalka w dol
+  - Enter jako powrot
+- wyjscie z panelu czysci terminal
+- tabela `glpi_users` ma pola:
+  - `glpi_user_id`
+  - `email`
+  - `full_name`
+  - `first_name`
+  - `last_name`
+- update userow GLPI loguje jeden przykladowy surowy payload z GLPI
 
-Wewnetrzne mapowanie w kodzie:
-
-- `from-no` -> `caller_number`
-- `from-dispname` -> `caller_name`
-- `to-no` -> `dialed_number`
-- `final-dn` -> `final_number`
-- `final-dispname` -> `final_name`
-
-Panel uruchamiasz z katalogu projektu:
-
-```bash
-sudo python3 admin_panel.py
-```
-
-`sudo` odpala panel z uprawnieniami administratora, zeby mogl robic `systemctl start/stop/restart`.
-`python3` odpala skrypt Pythonem 3.
-`admin_panel.py` to plik panelu.
-
-Panel uzywa istniejacej uslugi z `.env`:
-
-```env
-SERVICE_NAME=cdr_to_glpi.service
-```
-
-Jesli Twoj service ma inna nazwe, wpisz dokladnie ta nazwe. Sprawdzisz ja tak:
+## Uruchomienie
 
 ```bash
-systemctl list-units --type=service | grep cdr
+cd /opt/3cx-glpi
+python3 admin_panel.py
 ```
 
-`systemctl` zarzadza uslugami systemd.
-`list-units` pokazuje aktywne unity/uslugi.
-`--type=service` filtruje tylko uslugi.
-`grep cdr` pokazuje tylko linie zawierajace `cdr`.
+## Po podmianie kodu
 
-Najwazniejsze zmienne `.env`:
-
-```env
-GLPI_API_URL=https://twoj-glpi.example.pl/apirest.php
-GLPI_APP_TOKEN=...
-GLPI_USER_TOKEN=...
-LOG_PATH=logs/cdr_to_glpi.log
-DB_PATH=cdrdatabase.db
-SERVICE_NAME=cdr_to_glpi.service
+```bash
+sudo systemctl restart cdr_to_glpi.service
 ```
 
-Opcje w panelu:
 
-- menu glowne: uruchom/zatrzymaj usluge, systemd service, opcje bazy polaczen, opcje bazy userow GLPI, pokaz logi
-- opcje bazy polaczen: wyzeruj baze, pokaz rekordy `SELECT * FROM it_cdr`, ustaw limit, statystyki
-- opcje bazy userow GLPI: updatuj cache z GLPI, wyzeruj cache, pokaz rekordy `SELECT glpi_user_id, email, full_name, first_name, last_name FROM glpi_users ORDER BY glpi_user_id`, statystyki
+## v6 - debug payload CDR
 
-Limit bazy CDR jest w tabeli `settings` jako `cdr_max_records`. Wartosc: liczba >= 10 albo `unlimited`.
-
-Tabela cache userow GLPI ma teraz tylko:
+Parser CDR obsluguje teraz format 8-polowy:
 
 ```text
-glpi_user_id, email, full_name, first_name, last_name
+callid, duration, from-no, from-dn, from-dispname, to-no, final-dn, final-dispname
 ```
 
-Email jest brany najpierw z klasycznych pol mailowych GLPI (`email`, `email_default`, `default_email`). Jezeli sa puste, a `name` wyglada jak adres mailowy, wtedy email jest brany z `name`.
+Dla kazdego odebranego CDR do logow trafia tag `[CDR DEBUG]` z:
 
-Przy kazdym update cache userow aplikacja zapisuje do logow jeden przykladowy surowy payload usera z GLPI, zeby bylo widac, jakie pola faktycznie oddaje API.
+- surowa linia CDR,
+- liczba pol,
+- lista pol 1-8 z nazwami i wartosciami,
+- mapowanie uzywane przez aplikacje.
 
-Przy starcie aplikacji stara wersja tabeli `glpi_users` zostanie usunieta i utworzona od nowa bez migracji.
+Debug jest domyslnie wlaczony. Zeby go wylaczyc po testach, dodaj do `.env`:
+
+```env
+CDR_DEBUG_FULL_PAYLOAD=0
+```

@@ -17,6 +17,10 @@ LOG_PATH = os.getenv("LOG_PATH", "logs/cdr_to_glpi.log")
 # Wartosc moze byc liczba >= 10 albo "unlimited".
 CDR_MAX_RECORDS_DEFAULT = os.getenv("CDR_MAX_RECORDS_DEFAULT", "500")
 
+# Debug CDR: loguje caly surowy rekord CDR i rozpisane pola.
+# Na etapie testow zostawione domyslnie wlaczone. Potem mozesz dac w .env: CDR_DEBUG_FULL_PAYLOAD=0
+CDR_DEBUG_FULL_PAYLOAD = os.getenv("CDR_DEBUG_FULL_PAYLOAD", "1") == "1"
+
 # =========================
 # KONFIGURACJA 3CX
 # =========================

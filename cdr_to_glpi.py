@@ -315,6 +315,7 @@ def init_db():
             callid TEXT,
             duration TEXT,
             caller_number TEXT,
+            caller_dn TEXT,
             caller_name TEXT,
             dialed_number TEXT,
             final_number TEXT,
@@ -327,6 +328,7 @@ def init_db():
         )
     """)
 
+    add_column_if_missing(cursor, "it_cdr", "caller_dn", "TEXT")
     add_column_if_missing(cursor, "it_cdr", "caller_name", "TEXT")
     add_column_if_missing(cursor, "it_cdr", "glpi_requester_user_id", "TEXT")
 
@@ -468,18 +470,20 @@ def save_it_cdr(cdr: dict):
             callid,
             duration,
             caller_number,
+            caller_dn,
             caller_name,
             dialed_number,
             final_number,
             final_name,
             zrobiony
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         get_now_string(),
         cdr["callid"],
         cdr["duration"],
         cdr["caller_number"],
+        cdr.get("caller_dn", ""),
         cdr["caller_name"],
         cdr["dialed_number"],
         cdr["final_number"],
@@ -565,11 +569,19 @@ def get_db_stats():
 
 def parse_cdr_line(line: str):
     """
-    Nowa struktura CDR:
-    callid, duration, from-no, from-dispname, to-no, final-dn, final-dispname
+    Aktualna struktura CDR z 3CX:
+    1 callid
+    2 duration
+    3 from-no
+    4 from-dn
+    5 from-dispname
+    6 to-no
+    7 final-dn
+    8 final-dispname
 
-    Wewnetrznie zostawiamy stare nazwy kluczy, zeby reszta logiki byla czytelna:
+    Wewnetrzne mapowanie:
     caller_number = from-no
+    caller_dn = from-dn
     caller_name = from-dispname
     dialed_number = to-no
     final_number = final-dn
@@ -582,22 +594,102 @@ def parse_cdr_line(line: str):
     values = [v.strip() for v in values]
 
     if len(values) < 7:
-        raise ValueError(f"Za malo wartosci w CDR: {len(values)}. Oczekiwano 7 pol.")
+        raise ValueError(f"Za malo wartosci w CDR: {len(values)}. Oczekiwano 8 pol, awaryjnie minimum 7.")
 
     callid = values[0]
 
     if callid.startswith("Call "):
         callid = callid[5:]
 
-    return {
+    # Aktualny format z 8 polami.
+    if len(values) >= 8:
+        cdr = {
+            "callid": callid,
+            "duration": values[1],
+            "caller_number": values[2],
+            "caller_dn": values[3],
+            "caller_name": values[4],
+            "dialed_number": values[5],
+            "final_number": values[6],
+            "final_name": values[7],
+            "raw_values": values,
+            "raw_line": line,
+            "cdr_format": "8-fields: callid,duration,from-no,from-dn,from-dispname,to-no,final-dn,final-dispname"
+        }
+        return cdr
+
+    # Awaryjna kompatybilnosc ze starym formatem 7 pol.
+    cdr = {
         "callid": callid,
         "duration": values[1],
         "caller_number": values[2],
+        "caller_dn": "",
         "caller_name": values[3],
         "dialed_number": values[4],
         "final_number": values[5],
         "final_name": values[6],
+        "raw_values": values,
+        "raw_line": line,
+        "cdr_format": "7-fields legacy: callid,duration,from-no,from-dispname,to-no,final-dn,final-dispname"
     }
+    return cdr
+
+
+def build_cdr_debug_payload(cdr):
+    raw_values = cdr.get("raw_values") or []
+
+    field_names_8 = [
+        "callid",
+        "duration",
+        "from-no",
+        "from-dn",
+        "from-dispname",
+        "to-no",
+        "final-dn",
+        "final-dispname"
+    ]
+
+    numbered_fields = []
+
+    for index, value in enumerate(raw_values, start=1):
+        field_name = field_names_8[index - 1] if index <= len(field_names_8) else f"extra-field-{index}"
+        numbered_fields.append({
+            "nr": index,
+            "field": field_name,
+            "value": value
+        })
+
+    return {
+        "raw_line": cdr.get("raw_line", ""),
+        "raw_values_count": len(raw_values),
+        "format_detected": cdr.get("cdr_format", "unknown"),
+        "numbered_fields": numbered_fields,
+        "mapped_for_app": {
+            "callid": cdr.get("callid"),
+            "duration": cdr.get("duration"),
+            "caller_number_from_no": cdr.get("caller_number"),
+            "caller_dn_from_dn": cdr.get("caller_dn"),
+            "caller_name_from_dispname": cdr.get("caller_name"),
+            "dialed_number_to_no": cdr.get("dialed_number"),
+            "final_number_final_dn": cdr.get("final_number"),
+            "final_name_final_dispname": cdr.get("final_name")
+        }
+    }
+
+
+def log_cdr_debug_payload(cdr):
+    if not getattr(cfg, "CDR_DEBUG_FULL_PAYLOAD", False):
+        return
+
+    payload = build_cdr_debug_payload(cdr)
+
+    try:
+        payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
+    except Exception:
+        payload_text = repr(payload)
+
+    log("CDR DEBUG", "Pelny payload CDR po parsowaniu:")
+    log("CDR DEBUG", payload_text)
 
 
 # =========================
@@ -967,7 +1059,7 @@ def refresh_glpi_users_cache():
 def resolve_caller_user_id(cdr):
     caller_name = cdr.get("caller_name")
 
-    log("GLPI USER", f"Dopasowanie osoby dzwoniacej. from-no='{cdr.get('caller_number')}', from-dispname='{caller_name}'")
+    log("GLPI USER", f"Dopasowanie osoby dzwoniacej. from-no='{cdr.get('caller_number')}', from-dn='{cdr.get('caller_dn')}', from-dispname='{caller_name}'")
 
     user_id = find_glpi_user_in_cache(caller_name)
 
@@ -1027,6 +1119,7 @@ def build_missed_call_payload(cdr, caller_user_id=None):
         f"Call ID: {cdr['callid']}\n"
         f"Czas trwania: {cdr['duration']}\n"
         f"Numer dzwoniacy: {cdr['caller_number']}\n"
+        f"From DN: {cdr.get('caller_dn', '')}\n"
         f"Nazwa dzwoniacego: {cdr['caller_name']}\n"
         f"Numer wybrany: {cdr['dialed_number']}\n"
         f"Extension nr: {cdr['final_number']}\n"
@@ -1058,6 +1151,7 @@ def build_answered_call_payload(cdr, owner_id, caller_user_id=None):
         f"Call ID: {cdr['callid']}\n"
         f"Czas trwania: {cdr['duration']}\n"
         f"Numer dzwoniacy: {cdr['caller_number']}\n"
+        f"From DN: {cdr.get('caller_dn', '')}\n"
         f"Nazwa dzwoniacego: {cdr['caller_name']}\n"
         f"Numer wybrany: {cdr['dialed_number']}\n"
         f"Extension nr: {cdr['final_number']}\n"
@@ -1185,6 +1279,7 @@ def handle_cdr_line(line: str):
 
     try:
         cdr = parse_cdr_line(line)
+        log_cdr_debug_payload(cdr)
     except Exception as e:
         log("BLEDNY CDR", line)
         log("ERROR", e)

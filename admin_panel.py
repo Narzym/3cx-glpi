@@ -117,7 +117,7 @@ def get_systemd_status_text():
     return output
 
 
-def draw_header(screen, subtitle=None):
+def draw_header(screen, subtitle=None, footer_text="↑/↓ wybierz  Enter klik  q/Backspace wstecz"):
     if not draw_box(screen):
         return
 
@@ -137,7 +137,8 @@ def draw_header(screen, subtitle=None):
     if subtitle:
         safe_addstr(screen, 6, 3, subtitle, curses.A_BOLD)
 
-    safe_addstr(screen, screen.getmaxyx()[0] - 2, 3, "↑/↓ wybierz  Enter klik  q/Backspace wstecz", curses.A_DIM)
+    if footer_text:
+        safe_addstr(screen, screen.getmaxyx()[0] - 2, 3, footer_text, curses.A_DIM)
 
 
 def wait_key(screen):
@@ -177,7 +178,7 @@ def show_text(screen, title, text, start_at_bottom=False):
 
     while True:
         screen.clear()
-        draw_header(screen, title)
+        draw_header(screen, title, footer_text=None)
 
         height, width = screen.getmaxyx()
 
@@ -186,7 +187,7 @@ def show_text(screen, title, text, start_at_bottom=False):
             cache_width = width
 
         lines = lines_cache
-        visible_height = max(1, height - 10)
+        visible_height = max(1, height - 11)
         max_scroll = max(0, len(lines) - visible_height)
 
         if first_draw and start_at_bottom:
@@ -207,30 +208,22 @@ def show_text(screen, title, text, start_at_bottom=False):
         end_line = min(scroll + visible_height, len(lines))
         safe_addstr(
             screen,
-            height - 3,
+            height - 2,
             3,
-            f"Linie {start_line}-{end_line}/{len(lines)} | ↑/↓ scroll | PgUp/PgDn szybciej | Home/End | q wstecz",
+            f"Linie {start_line}-{end_line}/{len(lines)} | ↑/↓ scroll | Enter wstecz",
             curses.A_DIM
         )
         screen.refresh()
 
         key = screen.getch()
 
-        if key in (ord("q"), ord("Q"), 27, curses.KEY_BACKSPACE, 127, 8, 10, 13):
+        if key in (10, 13, curses.KEY_ENTER):
             return
 
         if key == curses.KEY_UP and scroll > 0:
             scroll -= 1
         elif key == curses.KEY_DOWN and scroll < max_scroll:
             scroll += 1
-        elif key == curses.KEY_PPAGE:
-            scroll = max(0, scroll - visible_height)
-        elif key == curses.KEY_NPAGE:
-            scroll = min(max_scroll, scroll + visible_height)
-        elif key == curses.KEY_HOME:
-            scroll = 0
-        elif key == curses.KEY_END:
-            scroll = max_scroll
 
 
 def confirm(screen, question):
@@ -365,7 +358,7 @@ def show_systemd_status(screen):
     show_text(screen, "Status systemd", get_systemd_status_text())
 
 
-def read_last_log_lines(max_lines=300):
+def read_full_log_file():
     log_path = cfg.LOG_PATH
 
     if not log_path:
@@ -376,26 +369,26 @@ def read_last_log_lines(max_lines=300):
 
     try:
         with open(log_path, "r", encoding="utf-8", errors="replace") as file:
-            lines = file.readlines()
+            content = file.read()
     except Exception as e:
         return f"Nie udalo sie odczytac logow: {type(e).__name__}: {e}"
 
-    if not lines:
+    if not content.strip():
         return f"Plik logow jest pusty: {log_path}"
 
-    selected_lines = lines[-max_lines:]
+    line_count = len(content.splitlines())
     header = [
         f"Plik logow: {log_path}",
-        f"Pokazuje ostatnie {len(selected_lines)} z {len(lines)} linii.",
+        f"Pokazuje caly plik: {line_count} linii.",
         ""
     ]
 
-    return "\n".join(header) + "\n" + "".join(selected_lines).rstrip()
+    return "\n".join(header) + "\n" + content.rstrip()
 
 
 def show_logs(screen):
     log_path = cfg.LOG_PATH or "brak LOG_PATH"
-    show_text(screen, f"Logi: {log_path}", read_last_log_lines(), start_at_bottom=True)
+    show_text(screen, f"Logi: {log_path}", read_full_log_file(), start_at_bottom=True)
 
 
 def format_sqlite_query_result(query):

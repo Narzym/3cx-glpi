@@ -5,7 +5,6 @@ import subprocess
 import textwrap
 import io
 import contextlib
-import sys
 
 import config as cfg
 import cdr_to_glpi as core
@@ -51,6 +50,10 @@ def draw_box(screen):
 
     screen.border()
     return True
+
+
+def clear_terminal_after_exit():
+    os.system("clear")
 
 
 def is_service_running():
@@ -117,11 +120,11 @@ def get_systemd_status_text():
     return output
 
 
-def draw_header(screen, subtitle=None, footer_text="↑/↓ wybierz  Enter klik  q/Backspace wstecz"):
+def draw_header(screen, subtitle=None, footer=True):
     if not draw_box(screen):
         return
 
-    width = screen.getmaxyx()[1]
+    height, width = screen.getmaxyx()
 
     title = "3cxToGLPI Admin Panel"
     safe_addstr(screen, 1, max(2, (width - len(title)) // 2), title, curses.A_BOLD | curses.color_pair(COLOR_CYAN))
@@ -137,82 +140,47 @@ def draw_header(screen, subtitle=None, footer_text="↑/↓ wybierz  Enter klik 
     if subtitle:
         safe_addstr(screen, 6, 3, subtitle, curses.A_BOLD)
 
-    if footer_text:
-        safe_addstr(screen, screen.getmaxyx()[0] - 2, 3, footer_text, curses.A_DIM)
+    if footer:
+        safe_addstr(screen, height - 2, 3, "↑/↓ wybierz | Enter klik | q/Backspace wstecz", curses.A_DIM)
 
 
-def wait_key(screen):
-    safe_addstr(screen, screen.getmaxyx()[0] - 2, 3, "Nacisnij dowolny klawisz, zeby wrocic...", curses.A_DIM)
-    screen.refresh()
-    screen.getch()
-
-
-def build_wrapped_lines(text, width):
-    lines = []
-    wrap_width = max(20, width - 8)
-
-    for line in str(text).splitlines():
-        if not line:
-            lines.append("")
-            continue
-
-        wrapped = textwrap.wrap(
-            line,
-            wrap_width,
-            replace_whitespace=False,
-            drop_whitespace=False
-        ) or [""]
-        lines.extend(wrapped)
-
-    if not lines:
-        lines = [""]
-
-    return lines
-
-
-def show_text(screen, title, text, start_at_bottom=False):
+def show_scrollable_text(screen, title, text, start_bottom=False):
+    raw_lines = str(text).splitlines()
     scroll = 0
-    first_draw = True
-    lines_cache = None
-    cache_width = None
 
     while True:
         screen.clear()
-        draw_header(screen, title, footer_text=None)
+        draw_header(screen, title, footer=False)
 
         height, width = screen.getmaxyx()
+        lines = []
 
-        if lines_cache is None or cache_width != width:
-            lines_cache = build_wrapped_lines(text, width)
-            cache_width = width
+        for line in raw_lines:
+            wrapped = textwrap.wrap(line, max(20, width - 8), replace_whitespace=False, drop_whitespace=False) or [""]
+            lines.extend(wrapped)
 
-        lines = lines_cache
         visible_height = max(1, height - 11)
+
+        if start_bottom:
+            scroll = max(0, len(lines) - visible_height)
+            start_bottom = False
+
+        if len(lines) == 0:
+            lines = [""]
+
         max_scroll = max(0, len(lines) - visible_height)
-
-        if first_draw and start_at_bottom:
-            scroll = max_scroll
-            first_draw = False
-        else:
-            first_draw = False
-            scroll = min(max(0, scroll), max_scroll)
-
+        scroll = min(max(scroll, 0), max_scroll)
         visible = lines[scroll:scroll + visible_height]
 
         y = 8
         for line in visible:
+            if y >= height - 3:
+                break
             safe_addstr(screen, y, 4, line)
             y += 1
 
-        start_line = min(scroll + 1, len(lines))
-        end_line = min(scroll + visible_height, len(lines))
-        safe_addstr(
-            screen,
-            height - 2,
-            3,
-            f"Linie {start_line}-{end_line}/{len(lines)} | ↑/↓ scroll | Enter wstecz",
-            curses.A_DIM
-        )
+        footer = f"Linie {scroll + 1}-{min(scroll + visible_height, len(lines))}/{len(lines)} | ↑/↓ scroll | Enter wstecz"
+        safe_addstr(screen, height - 2, 3, footer, curses.A_DIM)
         screen.refresh()
 
         key = screen.getch()
@@ -224,6 +192,10 @@ def show_text(screen, title, text, start_at_bottom=False):
             scroll -= 1
         elif key == curses.KEY_DOWN and scroll < max_scroll:
             scroll += 1
+
+
+def show_text(screen, title, text):
+    show_scrollable_text(screen, title, text, start_bottom=False)
 
 
 def confirm(screen, question):
@@ -314,12 +286,12 @@ def toggle_service(screen):
 
 
 def reset_cdr_db(screen):
-    if confirm(screen, "Na pewno wyzerowac baze polaczen it_cdr?"):
+    if confirm(screen, "Na pewno wyzerowac baze polaczen it_cdr? To tez przebuduje tabele na nowy schemat CDR."):
         run_action_and_show(screen, "Wyzeruj baze polaczen", core.reset_it_cdr)
 
 
 def reset_glpi_users_db(screen):
-    if confirm(screen, "Na pewno wyzerowac cache userow GLPI?"):
+    if confirm(screen, "Na pewno wyzerowac cache userow GLPI? To tez przebuduje tabele."):
         run_action_and_show(screen, "Wyzeruj baze userow GLPI", core.reset_glpi_users)
 
 
@@ -358,98 +330,65 @@ def show_systemd_status(screen):
     show_text(screen, "Status systemd", get_systemd_status_text())
 
 
-def read_full_log_file():
-    log_path = cfg.LOG_PATH
+def format_sql_table(headers, rows):
+    headers = [str(header) for header in headers]
+    string_rows = [["" if value is None else str(value) for value in row] for row in rows]
+    widths = []
 
-    if not log_path:
-        return "LOG_PATH nie jest ustawiony w configu."
+    for index, header in enumerate(headers):
+        values = [row[index] for row in string_rows]
+        width = max([len(header)] + [len(value) for value in values])
+        widths.append(min(width, 50))
 
-    if not os.path.exists(log_path):
-        return f"Plik logow nie istnieje jeszcze: {log_path}"
+    def cut(value, width):
+        value = str(value)
+        if len(value) <= width:
+            return value
+        return value[:width - 3] + "..."
 
-    try:
-        with open(log_path, "r", encoding="utf-8", errors="replace") as file:
-            content = file.read()
-    except Exception as e:
-        return f"Nie udalo sie odczytac logow: {type(e).__name__}: {e}"
+    lines = []
+    lines.append(" | ".join(cut(header, widths[i]).ljust(widths[i]) for i, header in enumerate(headers)))
+    lines.append("-+-".join("-" * width for width in widths))
 
-    if not content.strip():
-        return f"Plik logow jest pusty: {log_path}"
+    for row in string_rows:
+        lines.append(" | ".join(cut(value, widths[i]).ljust(widths[i]) for i, value in enumerate(row)))
 
-    line_count = len(content.splitlines())
-    header = [
-        f"Plik logow: {log_path}",
-        f"Pokazuje caly plik: {line_count} linii.",
-        ""
-    ]
+    return "\n".join(lines)
 
-    return "\n".join(header) + "\n" + content.rstrip()
+
+def query_sqlite(query):
+    conn = sqlite3.connect(cfg.DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(query)
+    rows = cursor.fetchall()
+    headers = [description[0] for description in cursor.description]
+    conn.close()
+
+    return f"Query: {query}\nLiczba rekordow: {len(rows)}\n\n" + format_sql_table(headers, rows)
+
+
+def show_cdr_records(screen):
+    show_text(screen, "Rekordy bazy polaczen", query_sqlite("SELECT * FROM it_cdr"))
+
+
+def show_glpi_user_records(screen):
+    query = "SELECT glpi_user_id, email, full_name, first_name, last_name FROM glpi_users ORDER BY glpi_user_id"
+    show_text(screen, "Rekordy bazy userow GLPI", query_sqlite(query))
 
 
 def show_logs(screen):
-    log_path = cfg.LOG_PATH or "brak LOG_PATH"
-    show_text(screen, f"Logi: {log_path}", read_full_log_file(), start_at_bottom=True)
+    path = cfg.LOG_PATH
 
+    if not os.path.exists(path):
+        text = f"Plik logow nie istnieje: {path}"
+    else:
+        with open(path, "r", encoding="utf-8", errors="replace") as file:
+            content = file.read()
 
-def format_sqlite_query_result(query):
-    conn = sqlite3.connect(cfg.DB_PATH)
-    cursor = conn.cursor()
+        line_count = len(content.splitlines())
+        text = f"Plik logow: {path}\nPokazuje caly plik: {line_count} linii.\n\n" + content
 
-    try:
-        cursor.execute(query)
-        rows = cursor.fetchall()
-        columns = [description[0] for description in cursor.description]
-    finally:
-        conn.close()
-
-    output = [
-        f"SQLite DB: {cfg.DB_PATH}",
-        f"Query: {query}",
-        f"Liczba rekordow: {len(rows)}",
-        ""
-    ]
-
-    if not rows:
-        output.append("Brak rekordow. Baza czysta jak stol po audycie.")
-        return "\n".join(output)
-
-    output.append(" | ".join(columns))
-    output.append("-" * 120)
-
-    for row in rows:
-        cells = []
-
-        for value in row:
-            cell = "" if value is None else str(value)
-            cell = cell.replace("\r", " ").replace("\n", " ")
-
-            if len(cell) > 160:
-                cell = cell[:160] + "... [ucieto]"
-
-            cells.append(cell)
-
-        output.append(" | ".join(cells))
-
-    return "\n".join(output)
-
-
-def show_sqlite_query(screen, title, query):
-    def do_query():
-        return format_sqlite_query_result(query)
-
-    run_action_and_show(screen, title, do_query)
-
-
-def show_it_cdr_records(screen):
-    show_sqlite_query(screen, "Rekordy bazy polaczen", "SELECT * FROM it_cdr")
-
-
-def show_glpi_users_records(screen):
-    show_sqlite_query(
-        screen,
-        "Rekordy bazy userow GLPI",
-        "SELECT glpi_user_id, email, full_name, first_name, last_name FROM glpi_users ORDER BY glpi_user_id"
-    )
+    show_scrollable_text(screen, "Logi", text, start_bottom=True)
 
 
 def draw_menu(screen, title, items, selected_index):
@@ -580,12 +519,12 @@ def systemd_menu_items():
 def cdr_db_menu_items():
     return [
         {
-            "label": "Wyzeruj baze polaczen",
-            "handler": reset_cdr_db
+            "label": "Pokaz rekordy",
+            "handler": show_cdr_records
         },
         {
-            "label": "Pokaz rekordy",
-            "handler": show_it_cdr_records
+            "label": "Wyzeruj baze polaczen",
+            "handler": reset_cdr_db
         },
         {
             "label": lambda: f"Ile rekordow max: {core.get_cdr_max_records_label()}",
@@ -605,16 +544,16 @@ def cdr_db_menu_items():
 def glpi_users_menu_items():
     return [
         {
+            "label": "Pokaz rekordy",
+            "handler": show_glpi_user_records
+        },
+        {
             "label": "Updatuj baze userow z GLPI",
             "handler": refresh_glpi_users
         },
         {
             "label": "Wyzeruj baze userow GLPI",
             "handler": reset_glpi_users_db
-        },
-        {
-            "label": "Pokaz rekordy",
-            "handler": show_glpi_users_records
         },
         {
             "label": "Statystyki bazy",
@@ -652,9 +591,7 @@ def main():
     try:
         curses.wrapper(curses_main)
     finally:
-        os.system("clear")
-        sys.stdout.write("\033[2J\033[H")
-        sys.stdout.flush()
+        clear_terminal_after_exit()
 
 
 if __name__ == "__main__":

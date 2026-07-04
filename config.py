@@ -9,7 +9,7 @@ load_dotenv()
 # =========================
 
 APP_NAME = "3cxToGLPI"
-APP_VERSION = "1.12"
+APP_VERSION = "1.13"
 SERVICE_NAME = os.getenv("SERVICE_NAME", "cdr_to_glpi.service")
 DB_PATH = os.getenv("DB_PATH", "cdrdatabase.db")
 LOG_PATH = os.getenv("LOG_PATH", "logs/cdr_to_glpi.log")

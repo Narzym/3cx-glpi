@@ -14,7 +14,7 @@ import cdr_to_glpi as core
 COLOR_GREEN = 1
 COLOR_RED = 2
 COLOR_YELLOW = 3
-COLOR_CYAN = 4
+COLOR_MAGENTA = 4
 COLOR_REVERSE = 5
 
 
@@ -127,8 +127,8 @@ def draw_header(screen, subtitle=None, footer=True):
 
     height, width = screen.getmaxyx()
 
-    title = f"3cxToGLPI Admin Panel v{getattr(cfg, 'APP_VERSION', '1.12')}"
-    safe_addstr(screen, 1, max(2, (width - len(title)) // 2), title, curses.A_BOLD | curses.color_pair(COLOR_CYAN))
+    title = f"3cxToGLPI Admin Panel v{getattr(cfg, 'APP_VERSION', '1.13')}"
+    safe_addstr(screen, 1, max(2, (width - len(title)) // 2), title, curses.A_BOLD | curses.color_pair(COLOR_MAGENTA))
 
     status, attr = get_service_status_label()
     safe_addstr(screen, 3, 3, "Status: ", curses.A_BOLD)
@@ -608,7 +608,7 @@ def draw_live_feed(screen, top_y):
 
     # Ramka bez fajerwerkow, zeby terminale przez SSH nie dostawaly czkawki.
     safe_addstr(screen, top_y, left, "+" + "-" * max(1, right - left - 1) + "+", curses.A_DIM)
-    safe_addstr(screen, top_y, left + 2, title, curses.A_BOLD | curses.color_pair(COLOR_CYAN))
+    safe_addstr(screen, top_y, left + 2, title, curses.A_BOLD | curses.color_pair(COLOR_MAGENTA))
 
     for y in range(top_y + 1, bottom):
         safe_addstr(screen, y, left, "|", curses.A_DIM)
@@ -618,13 +618,20 @@ def draw_live_feed(screen, top_y):
 
     inner_height = max(1, bottom - top_y - 1)
     inner_width = max(20, right - left - 3)
-    lines = get_basic_live_feed_lines(max_lines=inner_height)
+
+    # Czytamy wiekszy ogon pliku, bo verbose logi potrafia zakopac podstawowe eventy.
+    # Sam live feed dalej pokazuje tylko tyle najnowszych linii, ile miesci okienko.
+    read_window = max(2000, inner_height * 200)
+    lines = get_basic_live_feed_lines(max_lines=read_window)
 
     if not lines:
         lines = ["Brak podstawowych logow do pokazania."]
 
     visible = lines[-inner_height:]
-    y = top_y + 1
+
+    # Live feed ma zachowywac sie jak tail -f: najnowszy log laduje na dole,
+    # starsze stoja wyzej. Bez scrolla, bez nadpisywania w tym samym miejscu.
+    y = bottom - len(visible)
 
     for line in visible:
         attr = log_line_attr(line)
@@ -867,10 +874,6 @@ def cdr_db_menu_items():
             "handler": set_cdr_limit
         },
         {
-            "label": "Statystyki bazy",
-            "handler": show_db_stats
-        },
-        {
             "label": "Wstecz",
             "handler": lambda screen: "BACK"
         }
@@ -890,10 +893,6 @@ def glpi_users_menu_items():
         {
             "label": "Wyzeruj baze userow GLPI",
             "handler": reset_glpi_users_db
-        },
-        {
-            "label": "Statystyki bazy",
-            "handler": show_db_stats
         },
         {
             "label": "Wstecz",
@@ -917,10 +916,6 @@ def glpi_locations_menu_items():
             "handler": reset_glpi_locations_db
         },
         {
-            "label": "Statystyki bazy",
-            "handler": show_db_stats
-        },
-        {
             "label": "Wstecz",
             "handler": lambda screen: "BACK"
         }
@@ -937,8 +932,8 @@ def curses_main(screen):
     curses.init_pair(COLOR_GREEN, curses.COLOR_GREEN, -1)
     curses.init_pair(COLOR_RED, curses.COLOR_RED, -1)
     curses.init_pair(COLOR_YELLOW, curses.COLOR_YELLOW, -1)
-    curses.init_pair(COLOR_CYAN, curses.COLOR_CYAN, -1)
-    curses.init_pair(COLOR_REVERSE, curses.COLOR_BLACK, curses.COLOR_CYAN)
+    curses.init_pair(COLOR_MAGENTA, curses.COLOR_MAGENTA, -1)
+    curses.init_pair(COLOR_REVERSE, curses.COLOR_BLACK, curses.COLOR_MAGENTA)
 
     core.init_db()
 

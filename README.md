@@ -29,3 +29,11 @@ python3 admin_panel.py
 ```
 
 Zmiana `Opcje logow` dziala przez baze SQLite, wiec listener moze odczytac przelaczniki bez kolejnego restartu po samym klikaniu w panelu.
+
+
+## v1.13
+
+- Kolor przewodni panelu zmieniony z cyan na magenta.
+- Live feed pokazuje najnowsze logi od dolu, bez scrollowania.
+- Live feed czyta wiekszy ogon logow, zeby verbose payloady nie zaslanialy podstawowych eventow.
+- Usunieto opcje „Statystyki bazy” z submenu baz.

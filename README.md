@@ -1,42 +1,31 @@
-# 3cxToGLPI Admin Panel v1.11
+# 3cxToGLPI Admin Panel v1.12
 
+Zmiany w tej wersji:
 
-Zmiany v12:
+- Panel pokazuje wersje `v1.12`.
+- Menu glowne ma live feed z podstawowymi logami.
+- Live feed odswieza sie na zywo razem z licznikiem CDR w naglowku.
+- `Pokaz logi` zmienione na `Rozwin logi`.
+- Dodane submenu `Opcje logow`.
+- W `Opcje logow` mozna przelaczac:
+  - payload z CDR,
+  - payload z userow GLPI,
+  - payload z lokalizacji GLPI.
+- Payloady verbose sa domyslnie wylaczone i sterowane z SQLite/settings.
+- Sukcesy tworzenia ticketow sa kolorowane na zielono.
+- Errory sa kolorowane na czerwono.
+- Widok rekordow bazy polaczen jest skrocony:
+  - callid pokazuje ostatnie 8 znakow,
+  - dlugie pola sa ucinane,
+  - tabela nie zawija juz kazdego wiersza w makaron.
 
-- poprawione obslugiwanie bledu `ERROR_RIGHT_MISSING` przy pobieraniu lokalizacji GLPI,
-- gdy API user nie ma prawa do `Location`, kod pokazuje jasny komunikat zamiast enigmatycznego 403,
-- ticket z telefonu sali dalej dziala nawet bez lokalizacji: requester pusty, lokalizacja pusta, ticket idzie dalej,
-- przy cache miss lokalizacji kod domyslnie nie probuje pobierac lokalizacji online przy kazdym polaczeniu, zeby nie spamowac logow 403 i nie spowalniac ticketow,
-- lokalizacje najlepiej odswiezac z panelu po nadaniu uprawnien w GLPI,
-- `glpi_users` zostaje bez starych kolumn `normalized_full_name` i `updated_at`.
+Po wrzuceniu na Linuxa:
 
-## Wazne
-
-Blad:
-
-```text
-["ERROR_RIGHT_MISSING", "Brak uprawnien do wykonania tej akcji."]
+```bash
+cd /opt/3cx-glpi
+git pull
+sudo systemctl restart cdr_to_glpi.service
+python3 admin_panel.py
 ```
 
-oznacza, ze token/user API nie ma prawa odczytu do lokalizacji GLPI. Endpoint `/Location` jest OK, ale profil usera API musi miec prawo odczytu lokalizacji/list rozwijanych.
-
-Po poprawie uprawnien w GLPI wejdz w panel:
-
-```text
-Opcje bazy lokalizacji GLPI -> Updatuj baze lokalizacji z GLPI
-```
-
-## Opcjonalnie
-
-Domyslnie aplikacja nie robi online fetch lokalizacji przy kazdym cache miss. Jezeli jednak chcesz to wlaczyc:
-
-```env
-GLPI_AUTO_FETCH_LOCATIONS_ON_MISS=1
-```
-
-## v1.11
-
-- Tytul ticketu uzywa `from-dispname`, a nie `from-no`.
-- Lokalizacja GLPI odpala sie tylko, gdy `from-dispname` zawiera keyword `sala`.
-- Panel pokazuje wersje aplikacji w naglowku.
-- `it_cdr` dostaje brakujace kolumny automatycznie, zeby update nie wywalal sie na starej tabeli.
+Zmiana `Opcje logow` dziala przez baze SQLite, wiec listener moze odczytac przelaczniki bez kolejnego restartu po samym klikaniu w panelu.

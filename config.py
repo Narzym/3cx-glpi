@@ -9,7 +9,7 @@ load_dotenv()
 # =========================
 
 APP_NAME = "3cxToGLPI"
-APP_VERSION = "1.11"
+APP_VERSION = "1.12"
 SERVICE_NAME = os.getenv("SERVICE_NAME", "cdr_to_glpi.service")
 DB_PATH = os.getenv("DB_PATH", "cdrdatabase.db")
 LOG_PATH = os.getenv("LOG_PATH", "logs/cdr_to_glpi.log")
@@ -17,8 +17,13 @@ LOG_PATH = os.getenv("LOG_PATH", "logs/cdr_to_glpi.log")
 # Wartosc moze byc liczba >= 10 albo "unlimited".
 CDR_MAX_RECORDS_DEFAULT = os.getenv("CDR_MAX_RECORDS_DEFAULT", "500")
 
-# Loguje pelen payload CDR po parsowaniu. Przydatne do testow pol z 3CX.
-CDR_DEBUG_FULL_PAYLOAD = os.getenv("CDR_DEBUG_FULL_PAYLOAD", "1") == "1"
+# Domyslne ustawienia verbose logow. Panel zapisuje prawdziwy stan w SQLite/settings.
+# Domyslnie payloady sa wylaczone, zeby log nie rosl jak mutant po kawie.
+LOG_CDR_PAYLOAD_DEFAULT = os.getenv("LOG_CDR_PAYLOAD_DEFAULT", "0") == "1"
+LOG_GLPI_USER_SAMPLE_PAYLOAD_DEFAULT = os.getenv("LOG_GLPI_USER_SAMPLE_PAYLOAD_DEFAULT", "0") == "1"
+LOG_GLPI_LOCATION_SAMPLE_PAYLOAD_DEFAULT = os.getenv("LOG_GLPI_LOCATION_SAMPLE_PAYLOAD_DEFAULT", "0") == "1"
+# Stara zmienna zostaje jako alias awaryjny, ale nie wlacza juz nic sama z siebie.
+CDR_DEBUG_FULL_PAYLOAD = LOG_CDR_PAYLOAD_DEFAULT
 
 # =========================
 # KONFIGURACJA 3CX

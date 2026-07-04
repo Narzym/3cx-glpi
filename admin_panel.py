@@ -5,6 +5,7 @@ import subprocess
 import textwrap
 import io
 import contextlib
+from collections import deque
 
 import config as cfg
 import cdr_to_glpi as core
@@ -126,7 +127,7 @@ def draw_header(screen, subtitle=None, footer=True):
 
     height, width = screen.getmaxyx()
 
-    title = f"3cxToGLPI Admin Panel v{getattr(cfg, 'APP_VERSION', '1.11')}"
+    title = f"3cxToGLPI Admin Panel v{getattr(cfg, 'APP_VERSION', '1.12')}"
     safe_addstr(screen, 1, max(2, (width - len(title)) // 2), title, curses.A_BOLD | curses.color_pair(COLOR_CYAN))
 
     status, attr = get_service_status_label()
@@ -162,6 +163,92 @@ def wrap_lines_for_screen(raw_lines, content_width):
     return wrapped_lines
 
 
+def log_line_attr(line):
+    text = str(line)
+    upper = text.upper()
+
+    if "GLPI SUCCESS" in upper or "UTWORZONO TICKET" in upper or "[OK] CONNECTED" in upper:
+        return curses.color_pair(COLOR_GREEN) | curses.A_BOLD
+
+    error_markers = [
+        "ERROR",
+        "BLAD",
+        "BŁAD",
+        "FAIL",
+        "TRACEBACK",
+        "EXCEPTION",
+        "NIEUDANA",
+        "NIEOCZEKIWANY",
+        "FORBIDDEN",
+    ]
+
+    if any(marker in upper for marker in error_markers):
+        return curses.color_pair(COLOR_RED) | curses.A_BOLD
+
+    return curses.A_NORMAL
+
+
+def is_basic_log_line(line):
+    text = str(line)
+    upper = text.upper()
+
+    include_markers = [
+        "[GLPI SUCCESS]",
+        "[SPOZA IT]",
+        "[ERROR]",
+        "[GLPI ERROR]",
+        "[BLEDNY CDR]",
+        "[POMINIETO GLPI]",
+        "RECONNECTING IN",
+        "CONNECTING TO 3CX",
+        "CONNECTED TO 3CX",
+        "WAITING FOR CDR DATA",
+    ]
+
+    return any(marker in upper for marker in include_markers)
+
+
+def read_last_lines(path, max_lines=500):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as file:
+            return list(deque(file, maxlen=max_lines))
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        return [f"BLAD czytania logow: {type(e).__name__}: {e}\n"]
+
+
+def get_basic_live_feed_lines(max_lines=200):
+    lines = read_last_lines(cfg.LOG_PATH, max_lines=max_lines * 5)
+    filtered = [line.rstrip("\n") for line in lines if is_basic_log_line(line)]
+    return filtered[-max_lines:]
+
+
+def prepare_display_lines(raw_lines, content_width, colorize_logs=False, wrap=True):
+    display_lines = []
+
+    for raw_line in raw_lines:
+        attr = log_line_attr(raw_line) if colorize_logs else curses.A_NORMAL
+
+        if wrap:
+            wrapped = textwrap.wrap(
+                str(raw_line),
+                max(20, content_width),
+                replace_whitespace=False,
+                drop_whitespace=False
+            ) or [""]
+        else:
+            wrapped = [str(raw_line)]
+
+        for line in wrapped:
+            display_lines.append((line, attr))
+
+    if not display_lines:
+        display_lines = [("", curses.A_NORMAL)]
+
+    return display_lines
+
+
 def drain_input_queue(screen):
     """
     Czysci zakolejkowane klawisze.
@@ -189,10 +276,10 @@ def drain_input_queue(screen):
             screen.nodelay(False)
 
 
-def show_scrollable_text(screen, title, text, start_bottom=False, scroll_step=5):
+def show_scrollable_text(screen, title, text, start_bottom=False, scroll_step=5, colorize_logs=False, wrap=True):
     raw_lines = str(text).splitlines()
     scroll = 0
-    wrapped_lines = None
+    display_lines = None
     last_width = None
     initialized_bottom = False
 
@@ -204,26 +291,26 @@ def show_scrollable_text(screen, title, text, start_bottom=False, scroll_step=5)
         content_width = max(20, width - 8)
         visible_height = max(1, height - 12)
 
-        if wrapped_lines is None or last_width != content_width:
-            wrapped_lines = wrap_lines_for_screen(raw_lines, content_width)
+        if display_lines is None or last_width != content_width:
+            display_lines = prepare_display_lines(raw_lines, content_width, colorize_logs=colorize_logs, wrap=wrap)
             last_width = content_width
 
             if start_bottom and not initialized_bottom:
-                scroll = max(0, len(wrapped_lines) - visible_height)
+                scroll = max(0, len(display_lines) - visible_height)
                 initialized_bottom = True
 
-        max_scroll = max(0, len(wrapped_lines) - visible_height)
+        max_scroll = max(0, len(display_lines) - visible_height)
         scroll = min(max(scroll, 0), max_scroll)
-        visible = wrapped_lines[scroll:scroll + visible_height]
+        visible = display_lines[scroll:scroll + visible_height]
 
         y = 8
-        for line in visible:
+        for line, attr in visible:
             if y >= height - 4:
                 break
-            safe_addstr(screen, y, 4, line)
+            safe_addstr(screen, y, 4, line, attr)
             y += 1
 
-        footer = f"Linie {scroll + 1}-{min(scroll + visible_height, len(wrapped_lines))}/{len(wrapped_lines)} | ↑/↓ scroll | Enter wstecz"
+        footer = f"Linie {scroll + 1}-{min(scroll + visible_height, len(display_lines))}/{len(display_lines)} | ↑/↓ scroll | Enter wstecz"
         safe_addstr(screen, height - 2, 3, footer, curses.A_DIM)
         screen.refresh()
 
@@ -390,20 +477,24 @@ def show_systemd_status(screen):
     show_text(screen, "Status systemd", get_systemd_status_text())
 
 
-def format_sql_table(headers, rows):
+def format_sql_table(headers, rows, max_widths=None):
     headers = [str(header) for header in headers]
     string_rows = [["" if value is None else str(value) for value in row] for row in rows]
+    max_widths = max_widths or {}
     widths = []
 
     for index, header in enumerate(headers):
         values = [row[index] for row in string_rows]
         width = max([len(header)] + [len(value) for value in values])
-        widths.append(min(width, 50))
+        width_limit = max_widths.get(header, 50)
+        widths.append(min(width, width_limit))
 
     def cut(value, width):
         value = str(value)
         if len(value) <= width:
             return value
+        if width <= 3:
+            return value[:width]
         return value[:width - 3] + "..."
 
     lines = []
@@ -416,7 +507,7 @@ def format_sql_table(headers, rows):
     return "\n".join(lines)
 
 
-def query_sqlite(query):
+def query_sqlite(query, max_widths=None):
     try:
         conn = sqlite3.connect(cfg.DB_PATH)
         cursor = conn.cursor()
@@ -425,7 +516,7 @@ def query_sqlite(query):
         headers = [description[0] for description in cursor.description]
         conn.close()
 
-        return f"Query: {query}\nLiczba rekordow: {len(rows)}\n\n" + format_sql_table(headers, rows)
+        return f"Query: {query}\nLiczba rekordow: {len(rows)}\n\n" + format_sql_table(headers, rows, max_widths=max_widths)
 
     except sqlite3.Error as e:
         try:
@@ -437,7 +528,46 @@ def query_sqlite(query):
 
 
 def show_cdr_records(screen):
-    show_text(screen, "Rekordy bazy polaczen", query_sqlite("SELECT * FROM it_cdr"))
+    query = '''
+        SELECT
+            id,
+            substr(created_at, 1, 16) AS created,
+            substr(callid, -8) AS callid,
+            duration AS dur,
+            "from-no" AS from_no,
+            "from-dispname" AS from_name,
+            "to-no" AS to_no,
+            "final-dn" AS final_dn,
+            "final-dispname" AS final_name,
+            zrobiony AS ok,
+            glpi_ticket_id AS ticket,
+            glpi_requester_user_id AS req,
+            glpi_location_id AS loc,
+            glpi_error AS error
+        FROM it_cdr
+        ORDER BY id
+    '''
+
+    max_widths = {
+        "id": 4,
+        "created": 16,
+        "callid": 8,
+        "dur": 8,
+        "from_no": 12,
+        "from_name": 22,
+        "to_no": 8,
+        "final_dn": 8,
+        "final_name": 24,
+        "ok": 2,
+        "ticket": 8,
+        "req": 5,
+        "loc": 5,
+        "error": 28,
+    }
+
+    text = query_sqlite(query, max_widths=max_widths)
+    text = "Widok skrocony: callid = ostatnie 8 znakow, dlugie pola sa uciete.\n\n" + text
+    show_scrollable_text(screen, "Rekordy bazy polaczen", text, start_bottom=False, wrap=False)
 
 
 def show_glpi_user_records(screen):
@@ -462,82 +592,206 @@ def show_logs(screen):
         line_count = len(content.splitlines())
         text = f"Plik logow: {path}\nPokazuje caly plik: {line_count} linii.\n\n" + content
 
-    show_scrollable_text(screen, "Logi", text, start_bottom=True)
+    show_scrollable_text(screen, "Rozwin logi", text, start_bottom=True, colorize_logs=True, wrap=True)
 
 
-def draw_menu(screen, title, items, selected_index):
+def draw_live_feed(screen, top_y):
+    height, width = screen.getmaxyx()
+    left = 4
+    right = max(left + 20, width - 5)
+    bottom = height - 4
+
+    if bottom <= top_y + 3:
+        return
+
+    title = " Live feed "
+
+    # Ramka bez fajerwerkow, zeby terminale przez SSH nie dostawaly czkawki.
+    safe_addstr(screen, top_y, left, "+" + "-" * max(1, right - left - 1) + "+", curses.A_DIM)
+    safe_addstr(screen, top_y, left + 2, title, curses.A_BOLD | curses.color_pair(COLOR_CYAN))
+
+    for y in range(top_y + 1, bottom):
+        safe_addstr(screen, y, left, "|", curses.A_DIM)
+        safe_addstr(screen, y, right, "|", curses.A_DIM)
+
+    safe_addstr(screen, bottom, left, "+" + "-" * max(1, right - left - 1) + "+", curses.A_DIM)
+
+    inner_height = max(1, bottom - top_y - 1)
+    inner_width = max(20, right - left - 3)
+    lines = get_basic_live_feed_lines(max_lines=inner_height)
+
+    if not lines:
+        lines = ["Brak podstawowych logow do pokazania."]
+
+    visible = lines[-inner_height:]
+    y = top_y + 1
+
+    for line in visible:
+        attr = log_line_attr(line)
+        safe_addstr(screen, y, left + 2, str(line)[:inner_width], attr)
+        y += 1
+
+def add_label_parts(screen, y, x, parts, selected=False):
+    current_x = x
+
+    for text, attr in parts:
+        text = str(text)
+
+        if selected and attr == curses.A_NORMAL:
+            attr = curses.color_pair(COLOR_REVERSE) | curses.A_BOLD
+
+        safe_addstr(screen, y, current_x, text, attr)
+        current_x += len(text)
+
+
+def draw_menu(screen, title, items, selected_index, live_feed=False):
     screen.clear()
     draw_header(screen, title)
 
     height, width = screen.getmaxyx()
     start_y = 8
     item_rows = []
+    feed_top = None
+
+    if live_feed:
+        feed_top = max(14, min(height - 14, start_y + len(items) * 2 + 1))
+        max_menu_bottom = feed_top - 2
+    else:
+        max_menu_bottom = height - 3
 
     for index, item in enumerate(items):
         y = start_y + index * 2
 
-        if y >= height - 3:
+        if y >= max_menu_bottom:
             break
 
-        label = item["label"]() if callable(item["label"]) else item["label"]
         prefix = "➜ " if index == selected_index else "  "
-        attr = curses.A_NORMAL
+        selected_attr = curses.color_pair(COLOR_REVERSE) | curses.A_BOLD
 
-        if index == selected_index:
-            attr = curses.color_pair(COLOR_REVERSE) | curses.A_BOLD
+        if "label_parts" in item:
+            safe_addstr(screen, y, 4, prefix, selected_attr if index == selected_index else curses.A_NORMAL)
+            parts = item["label_parts"]() if callable(item["label_parts"]) else item["label_parts"]
+            add_label_parts(screen, y, 4 + len(prefix), parts, selected=(index == selected_index))
+        else:
+            label = item["label"]() if callable(item["label"]) else item["label"]
+            attr = selected_attr if index == selected_index else curses.A_NORMAL
+            safe_addstr(screen, y, 4, (prefix + label).ljust(max(10, width - 9)), attr)
 
-        safe_addstr(screen, y, 4, (prefix + label).ljust(max(10, width - 9)), attr)
         item_rows.append((y, index))
+
+    if live_feed and feed_top is not None:
+        draw_live_feed(screen, feed_top)
 
     return item_rows
 
 
-def menu_loop(screen, title, build_items):
+def menu_loop(screen, title, build_items, live_feed=False):
     selected = 0
 
-    while True:
-        items = build_items()
+    if live_feed:
+        screen.timeout(1000)
+    else:
+        screen.timeout(-1)
 
-        if selected >= len(items):
-            selected = max(0, len(items) - 1)
+    try:
+        while True:
+            screen.timeout(1000 if live_feed else -1)
+            items = build_items()
 
-        item_rows = draw_menu(screen, title, items, selected)
-        screen.refresh()
+            if selected >= len(items):
+                selected = max(0, len(items) - 1)
 
-        key = screen.getch()
+            item_rows = draw_menu(screen, title, items, selected, live_feed=live_feed)
+            screen.refresh()
 
-        if key in (ord("q"), ord("Q"), 27, curses.KEY_BACKSPACE, 127, 8):
-            return
+            key = screen.getch()
 
-        if key == curses.KEY_UP:
-            selected = (selected - 1) % len(items)
-            continue
-
-        if key == curses.KEY_DOWN:
-            selected = (selected + 1) % len(items)
-            continue
-
-        if key == curses.KEY_MOUSE:
-            try:
-                _, mouse_x, mouse_y, _, _ = curses.getmouse()
-            except Exception:
+            if key == -1:
                 continue
 
-            for row_y, index in item_rows:
-                if mouse_y == row_y and mouse_x >= 4:
-                    selected = index
-                    key = 10
-                    break
-
-        if key in (10, 13, curses.KEY_ENTER):
-            handler = items[selected]["handler"]
-            result = handler(screen)
-
-            if result == "EXIT_APP":
-                raise ScreenExit()
-
-            if result == "BACK":
+            if key in (ord("q"), ord("Q"), 27, curses.KEY_BACKSPACE, 127, 8):
                 return
+
+            if key == curses.KEY_UP:
+                selected = (selected - 1) % len(items)
+                continue
+
+            if key == curses.KEY_DOWN:
+                selected = (selected + 1) % len(items)
+                continue
+
+            if key == curses.KEY_MOUSE:
+                try:
+                    _, mouse_x, mouse_y, _, _ = curses.getmouse()
+                except Exception:
+                    continue
+
+                for row_y, index in item_rows:
+                    if mouse_y == row_y and mouse_x >= 4:
+                        selected = index
+                        key = 10
+                        break
+
+            if key in (10, 13, curses.KEY_ENTER):
+                handler = items[selected]["handler"]
+                result = handler(screen)
+
+                if result == "EXIT_APP":
+                    raise ScreenExit()
+
+                if result == "BACK":
+                    return
+
+    finally:
+        screen.timeout(-1)
+
+
+LOG_OPTIONS_MENU = [
+    ("log_cdr_payload", "payload z CDR"),
+    ("log_glpi_user_sample_payload", "payload z userow GLPI"),
+    ("log_glpi_location_sample_payload", "payload z lokalizacji GLPI"),
+]
+
+
+def log_option_label_parts(key, label):
+    enabled = core.is_verbose_log_enabled(key)
+
+    if enabled:
+        status = "[wlaczone]"
+        attr = curses.color_pair(COLOR_GREEN) | curses.A_BOLD
+    else:
+        status = "[wylaczone]"
+        attr = curses.color_pair(COLOR_RED) | curses.A_BOLD
+
+    return [
+        (status, attr),
+        (f" - {label}", curses.A_NORMAL),
+    ]
+
+
+def make_toggle_log_option_handler(key):
+    def handler(screen):
+        core.toggle_log_option(key)
+        return None
+
+    return handler
+
+
+def log_options_menu_items():
+    items = []
+
+    for key, label in LOG_OPTIONS_MENU:
+        items.append({
+            "label_parts": lambda key=key, label=label: log_option_label_parts(key, label),
+            "handler": make_toggle_log_option_handler(key)
+        })
+
+    items.append({
+        "label": "Wstecz",
+        "handler": lambda screen: "BACK"
+    })
+
+    return items
 
 
 def main_menu_items():
@@ -563,7 +817,11 @@ def main_menu_items():
             "handler": lambda screen: menu_loop(screen, "Opcje bazy lokalizacji GLPI", glpi_locations_menu_items)
         },
         {
-            "label": "Pokaz logi",
+            "label": "Opcje logow",
+            "handler": lambda screen: menu_loop(screen, "Opcje logow", log_options_menu_items)
+        },
+        {
+            "label": "Rozwin logi",
             "handler": show_logs
         },
         {
@@ -685,7 +943,7 @@ def curses_main(screen):
     core.init_db()
 
     try:
-        menu_loop(screen, "Menu glowne", main_menu_items)
+        menu_loop(screen, "Menu glowne", main_menu_items, live_feed=True)
     except ScreenExit:
         return
 

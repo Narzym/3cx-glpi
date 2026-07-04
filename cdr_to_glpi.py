@@ -377,6 +377,17 @@ def normalize_cdr_limit_value(value):
     return str(limit)
 
 
+def bool_to_setting(value):
+    return "1" if bool(value) else "0"
+
+
+LOG_OPTION_DEFAULTS = {
+    "log_cdr_payload": bool_to_setting(getattr(cfg, "LOG_CDR_PAYLOAD_DEFAULT", False)),
+    "log_glpi_user_sample_payload": bool_to_setting(getattr(cfg, "LOG_GLPI_USER_SAMPLE_PAYLOAD_DEFAULT", False)),
+    "log_glpi_location_sample_payload": bool_to_setting(getattr(cfg, "LOG_GLPI_LOCATION_SAMPLE_PAYLOAD_DEFAULT", False)),
+}
+
+
 def init_db():
     conn = db_connect()
     cursor = conn.cursor()
@@ -400,6 +411,12 @@ def init_db():
         INSERT OR IGNORE INTO settings (key, value)
         VALUES ('cdr_max_records', ?)
     ''', (default_limit,))
+
+    for key, default_value in LOG_OPTION_DEFAULTS.items():
+        cursor.execute('''
+            INSERT OR IGNORE INTO settings (key, value)
+            VALUES (?, ?)
+        ''', (key, default_value))
 
     conn.commit()
     conn.close()
@@ -432,6 +449,43 @@ def set_setting(key, value):
 
     conn.commit()
     conn.close()
+
+
+def setting_to_bool(value, default=False):
+    if value is None:
+        return default
+
+    return str(value).strip().lower() in ("1", "true", "yes", "tak", "on", "wlaczone")
+
+
+def get_bool_setting(key, default=False):
+    return setting_to_bool(get_setting(key, bool_to_setting(default)), default)
+
+
+def set_bool_setting(key, value):
+    set_setting(key, bool_to_setting(value))
+    return get_bool_setting(key, False)
+
+
+def toggle_bool_setting(key):
+    current = get_bool_setting(key, False)
+    return set_bool_setting(key, not current)
+
+
+def is_verbose_log_enabled(key):
+    default = setting_to_bool(LOG_OPTION_DEFAULTS.get(key), False)
+    return get_bool_setting(key, default)
+
+
+def get_log_options_state():
+    return {key: is_verbose_log_enabled(key) for key in LOG_OPTION_DEFAULTS}
+
+
+def toggle_log_option(key):
+    if key not in LOG_OPTION_DEFAULTS:
+        raise ValueError(f"Nieznana opcja logow: {key}")
+
+    return toggle_bool_setting(key)
 
 
 def get_cdr_max_records():
@@ -662,7 +716,7 @@ def parse_cdr_line(line: str):
     if len(values) < 7:
         raise ValueError(f"Za malo wartosci w CDR: {len(values)}. Oczekiwano 7 pol.")
 
-    if len(values) > 7:
+    if len(values) > 7 and is_verbose_log_enabled("log_cdr_payload"):
         log("CDR DEBUG", f"CDR ma {len(values)} pol, ale parser uzywa pierwszych 7. Sprawdz ustawienia 3CX.")
 
     callid = values[0]
@@ -706,7 +760,7 @@ def parse_cdr_line(line: str):
     return cdr
 
 def log_cdr_debug(cdr):
-    if not cfg.CDR_DEBUG_FULL_PAYLOAD:
+    if not is_verbose_log_enabled("log_cdr_payload"):
         return
 
     debug_payload = {
@@ -1063,11 +1117,12 @@ def refresh_glpi_users_cache():
     log("GLPI USER", "Pobieram userow z GLPI do cache...")
     users = fetch_glpi_users()
 
-    if users:
-        log("GLPI USER SAMPLE", "Przykladowy surowy payload jednego usera z GLPI:")
-        log("GLPI USER SAMPLE", json.dumps(users[0], ensure_ascii=False, indent=2))
-    else:
-        log("GLPI USER SAMPLE", "GLPI nie zwrocilo zadnego usera.")
+    if is_verbose_log_enabled("log_glpi_user_sample_payload"):
+        if users:
+            log("GLPI USER SAMPLE", "Przykladowy surowy payload jednego usera z GLPI:")
+            log("GLPI USER SAMPLE", json.dumps(users[0], ensure_ascii=False, indent=2))
+        else:
+            log("GLPI USER SAMPLE", "GLPI nie zwrocilo zadnego usera.")
 
     count = upsert_glpi_users(users, replace=True)
     log("GLPI USER", f"Zaktualizowano cache userow GLPI. Zapisano: {count}")
@@ -1441,11 +1496,12 @@ def refresh_glpi_locations_cache():
     log("GLPI LOCATION", "Pobieram lokalizacje z GLPI do cache...")
     locations = fetch_glpi_locations()
 
-    if locations:
-        log("GLPI LOCATION SAMPLE", "Przykladowy surowy payload jednej lokalizacji z GLPI:")
-        log("GLPI LOCATION SAMPLE", json.dumps(locations[0], ensure_ascii=False, indent=2))
-    else:
-        log("GLPI LOCATION SAMPLE", "GLPI nie zwrocilo zadnej lokalizacji.")
+    if is_verbose_log_enabled("log_glpi_location_sample_payload"):
+        if locations:
+            log("GLPI LOCATION SAMPLE", "Przykladowy surowy payload jednej lokalizacji z GLPI:")
+            log("GLPI LOCATION SAMPLE", json.dumps(locations[0], ensure_ascii=False, indent=2))
+        else:
+            log("GLPI LOCATION SAMPLE", "GLPI nie zwrocilo zadnej lokalizacji.")
 
     count = upsert_glpi_locations(locations, replace=True)
     log("GLPI LOCATION", f"Zaktualizowano cache lokalizacji GLPI. Zapisano: {count}")

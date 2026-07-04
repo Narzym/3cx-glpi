@@ -144,55 +144,105 @@ def draw_header(screen, subtitle=None, footer=True):
         safe_addstr(screen, height - 2, 3, "↑/↓ wybierz | Enter klik | q/Backspace wstecz", curses.A_DIM)
 
 
-def show_scrollable_text(screen, title, text, start_bottom=False):
+def wrap_lines_for_screen(raw_lines, content_width):
+    wrapped_lines = []
+
+    for line in raw_lines:
+        wrapped = textwrap.wrap(
+            line,
+            max(20, content_width),
+            replace_whitespace=False,
+            drop_whitespace=False
+        ) or [""]
+        wrapped_lines.extend(wrapped)
+
+    if not wrapped_lines:
+        wrapped_lines = [""]
+
+    return wrapped_lines
+
+
+def drain_input_queue(screen):
+    """
+    Czysci zakolejkowane klawisze.
+    Jak przytrzymasz strzalke, terminal potrafi wyslac setki KEY_UP/KEY_DOWN.
+    Bez tego panel potem jeszcze minute mieli stare klawisze jak chomik w kolowrotku.
+    """
+
+    old_nodelay = False
+
+    try:
+        screen.nodelay(True)
+        old_nodelay = True
+
+        while screen.getch() != -1:
+            pass
+
+    except Exception:
+        try:
+            curses.flushinp()
+        except Exception:
+            pass
+
+    finally:
+        if old_nodelay:
+            screen.nodelay(False)
+
+
+def show_scrollable_text(screen, title, text, start_bottom=False, scroll_step=5):
     raw_lines = str(text).splitlines()
     scroll = 0
+    wrapped_lines = None
+    last_width = None
+    initialized_bottom = False
 
     while True:
         screen.clear()
         draw_header(screen, title, footer=False)
 
         height, width = screen.getmaxyx()
-        lines = []
+        content_width = max(20, width - 8)
+        visible_height = max(1, height - 12)
 
-        for line in raw_lines:
-            wrapped = textwrap.wrap(line, max(20, width - 8), replace_whitespace=False, drop_whitespace=False) or [""]
-            lines.extend(wrapped)
+        if wrapped_lines is None or last_width != content_width:
+            wrapped_lines = wrap_lines_for_screen(raw_lines, content_width)
+            last_width = content_width
 
-        visible_height = max(1, height - 11)
+            if start_bottom and not initialized_bottom:
+                scroll = max(0, len(wrapped_lines) - visible_height)
+                initialized_bottom = True
 
-        if start_bottom:
-            scroll = max(0, len(lines) - visible_height)
-            start_bottom = False
-
-        if len(lines) == 0:
-            lines = [""]
-
-        max_scroll = max(0, len(lines) - visible_height)
+        max_scroll = max(0, len(wrapped_lines) - visible_height)
         scroll = min(max(scroll, 0), max_scroll)
-        visible = lines[scroll:scroll + visible_height]
+        visible = wrapped_lines[scroll:scroll + visible_height]
 
         y = 8
         for line in visible:
-            if y >= height - 3:
+            if y >= height - 4:
                 break
             safe_addstr(screen, y, 4, line)
             y += 1
 
-        footer = f"Linie {scroll + 1}-{min(scroll + visible_height, len(lines))}/{len(lines)} | ↑/↓ scroll | Enter wstecz"
+        footer = f"Linie {scroll + 1}-{min(scroll + visible_height, len(wrapped_lines))}/{len(wrapped_lines)} | ↑/↓ scroll | Enter wstecz"
         safe_addstr(screen, height - 2, 3, footer, curses.A_DIM)
         screen.refresh()
 
-        key = screen.getch()
-
-        if key in (10, 13, curses.KEY_ENTER):
+        try:
+            key = screen.getch()
+        except KeyboardInterrupt:
             return
 
-        if key == curses.KEY_UP and scroll > 0:
-            scroll -= 1
-        elif key == curses.KEY_DOWN and scroll < max_scroll:
-            scroll += 1
+        if key in (10, 13, curses.KEY_ENTER):
+            drain_input_queue(screen)
+            return
 
+        if key == curses.KEY_UP:
+            scroll = max(0, scroll - scroll_step)
+            drain_input_queue(screen)
+
+        elif key == curses.KEY_DOWN:
+            scroll = min(max_scroll, scroll + scroll_step)
+            drain_input_queue(screen)
 
 def show_text(screen, title, text):
     show_scrollable_text(screen, title, text, start_bottom=False)
@@ -590,6 +640,8 @@ def curses_main(screen):
 def main():
     try:
         curses.wrapper(curses_main)
+    except KeyboardInterrupt:
+        pass
     finally:
         clear_terminal_after_exit()
 

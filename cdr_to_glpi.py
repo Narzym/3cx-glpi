@@ -14,6 +14,11 @@ from datetime import datetime
 import config as cfg
 
 
+# Jesli API user nie ma prawa do Location, nie probujemy pobierac lokalizacji online
+# przy kazdym polaczeniu. Panel nadal moze sprobowac update po poprawie uprawnien.
+GLPI_LOCATION_FETCH_FORBIDDEN_RUNTIME = False
+
+
 # =========================
 # POMOCNICZE
 # =========================
@@ -89,6 +94,22 @@ def get_response_text(response):
         return "Brak odpowiedzi"
 
     return truncate_text(response.text, 1500)
+
+
+def response_has_glpi_error(response, code):
+    text = get_response_text(response)
+    return str(code) in text
+
+
+def build_glpi_right_missing_message(itemtype, response):
+    return (
+        f"GLPI {itemtype} fetch error. HTTP 403 Forbidden. "
+        f"API user/token nie ma prawa odczytu do itemtype '{itemtype}'. "
+        "To nie wyglada na zly endpoint, tylko na brak uprawnien profilu uzytkownika API. "
+        "W GLPI nadaj profilowi tego usera prawo Odczyt/Read do Lokalizacji/List rozwijanych, "
+        "albo uzyj tokena usera z takim prawem. "
+        f"Body: {get_response_text(response)}"
+    )
 
 
 def get_now_string():
@@ -282,6 +303,66 @@ def create_glpi_locations_table(cursor):
     ''')
 
 
+def get_table_columns(cursor, table_name):
+    try:
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        return {row[1] for row in cursor.fetchall()}
+    except sqlite3.Error:
+        return set()
+
+
+def add_column_if_missing(cursor, table_name, column_name, column_definition):
+    columns = get_table_columns(cursor, table_name)
+
+    if column_name in columns:
+        return False
+
+    cursor.execute(f'ALTER TABLE {table_name} ADD COLUMN "{column_name}" {column_definition}')
+    return True
+
+
+def ensure_it_cdr_schema(cursor):
+    # Nie migrujemy danych, ale dodajemy brakujace kolumny, zeby stara tabela
+    # nie wysypala listenera po update kodu. Stare kolumny moga sobie zostac.
+    expected_columns = {
+        "created_at": "TEXT",
+        "callid": "TEXT",
+        "duration": "TEXT",
+        "from-no": "TEXT",
+        "from-dispname": "TEXT",
+        "to-no": "TEXT",
+        "final-dn": "TEXT",
+        "final-dispname": "TEXT",
+        "zrobiony": "INTEGER NOT NULL DEFAULT 0",
+        "glpi_ticket_id": "TEXT",
+        "glpi_status_code": "INTEGER",
+        "glpi_error": "TEXT",
+        "glpi_requester_user_id": "TEXT",
+        "glpi_location_id": "TEXT",
+    }
+
+    for column_name, column_definition in expected_columns.items():
+        try:
+            add_column_if_missing(cursor, "it_cdr", column_name, column_definition)
+        except sqlite3.Error as e:
+            log("DB", f"Nie udalo sie dodac kolumny it_cdr.{column_name}: {type(e).__name__}: {e}")
+
+
+def ensure_glpi_users_schema(cursor):
+    expected_columns = {
+        "email": "TEXT",
+        "full_name": "TEXT",
+        "first_name": "TEXT",
+        "last_name": "TEXT",
+    }
+
+    for column_name, column_definition in expected_columns.items():
+        try:
+            add_column_if_missing(cursor, "glpi_users", column_name, column_definition)
+        except sqlite3.Error as e:
+            log("DB", f"Nie udalo sie dodac kolumny glpi_users.{column_name}: {type(e).__name__}: {e}")
+
+
 def normalize_cdr_limit_value(value):
     value = str(value).strip().lower()
 
@@ -301,6 +382,7 @@ def init_db():
     cursor = conn.cursor()
 
     create_it_cdr_table(cursor)
+    ensure_it_cdr_schema(cursor)
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS settings (
@@ -310,6 +392,7 @@ def init_db():
     ''')
 
     create_glpi_users_table(cursor)
+    ensure_glpi_users_schema(cursor)
     create_glpi_locations_table(cursor)
 
     default_limit = normalize_cdr_limit_value(cfg.CDR_MAX_RECORDS_DEFAULT)
@@ -1041,10 +1124,10 @@ def resolve_caller_context(cdr):
     """
 
     caller_name = cdr.get("caller_name") or ""
-    room_number = extract_room_number_from_text(caller_name)
+    room_number = extract_room_number_from_caller_dispname(caller_name)
 
     if room_number and cfg.GLPI_SET_ROOM_AS_LOCATION:
-        log("GLPI LOCATION", f"from-dispname wyglada jak sala. from-dispname='{caller_name}', room_number='{room_number}'. Requester bedzie pusty.")
+        log("GLPI LOCATION", f"from-dispname ma keyword 'sala'. from-dispname='{caller_name}', room_number='{room_number}'. Requester bedzie pusty.")
 
         try:
             location_id = resolve_location_id_by_room(room_number)
@@ -1053,6 +1136,9 @@ def resolve_caller_context(cdr):
             location_id = None
 
         return None, location_id
+
+    if cfg.GLPI_SET_ROOM_AS_LOCATION and not from_dispname_has_sala_keyword(caller_name):
+        log("GLPI LOCATION", f"Brak keywordu 'sala' w from-dispname='{caller_name}'. Nie dotykam lokalizacji.")
 
     try:
         return resolve_caller_user_id(cdr), None
@@ -1128,6 +1214,31 @@ def extract_room_number_from_text(value):
 
     # Po normalizacji: 443 sala wykladowa
     match = re.search(r"\b([0-9]{1,5}[a-z]?)\s+sala\b", normalized)
+    if match:
+        return match.group(1)
+
+    return ""
+
+
+def from_dispname_has_sala_keyword(value):
+    normalized = normalize_name(value)
+    return bool(re.search(r"\bsala\b", normalized))
+
+
+def extract_room_number_from_caller_dispname(value):
+    # Lokalizacje odpalamy WYLACZNIE dla from-dispname z keywordem "sala".
+    # Numer telefonu albo zwykle imie usera nie ma prawa tu wejsc.
+    if not from_dispname_has_sala_keyword(value):
+        return ""
+
+    room_number = extract_room_number_from_text(value)
+
+    if room_number:
+        return room_number
+
+    normalized = normalize_name(value)
+    match = re.search(r"\b([0-9]{1,5}[a-z]?)\b", normalized)
+
     if match:
         return match.group(1)
 
@@ -1279,6 +1390,14 @@ def fetch_glpi_locations():
                     f"Blad polaczenia przy pobieraniu lokalizacji GLPI: {type(e).__name__}: {e}"
                 )
 
+            if response.status_code == 403 and response_has_glpi_error(response, "ERROR_RIGHT_MISSING"):
+                global GLPI_LOCATION_FETCH_FORBIDDEN_RUNTIME
+                GLPI_LOCATION_FETCH_FORBIDDEN_RUNTIME = True
+                raise GLPIRequestError(
+                    build_glpi_right_missing_message("Location", response),
+                    response.status_code
+                )
+
             if response.status_code not in (200, 206):
                 raise GLPIRequestError(
                     f"GLPI Location fetch error. HTTP {response.status_code} {response.reason}. Body: {get_response_text(response)}",
@@ -1316,6 +1435,9 @@ def fetch_glpi_locations():
 
 
 def refresh_glpi_locations_cache():
+    global GLPI_LOCATION_FETCH_FORBIDDEN_RUNTIME
+    GLPI_LOCATION_FETCH_FORBIDDEN_RUNTIME = False
+
     log("GLPI LOCATION", "Pobieram lokalizacje z GLPI do cache...")
     locations = fetch_glpi_locations()
 
@@ -1331,6 +1453,10 @@ def refresh_glpi_locations_cache():
 
 
 def fetch_and_cache_locations_silent():
+    if GLPI_LOCATION_FETCH_FORBIDDEN_RUNTIME:
+        log("GLPI LOCATION", "Pomijam online fetch lokalizacji: w tej sesji API juz zwrocilo 403/ERROR_RIGHT_MISSING dla Location.")
+        return 0
+
     locations = fetch_glpi_locations()
     saved = upsert_glpi_locations(locations, replace=False)
     log("GLPI LOCATION", f"Online GLPI fetch OK. Zapisano/odswiezono lokalizacje: {saved}")
@@ -1346,6 +1472,10 @@ def resolve_location_id_by_room(room_number):
 
     if location_id:
         return location_id
+
+    if not cfg.GLPI_AUTO_FETCH_LOCATIONS_ON_MISS:
+        log("GLPI LOCATION", "Nie robie online fetch lokalizacji przy polaczeniu. Odswiez cache z panelu albo ustaw GLPI_AUTO_FETCH_LOCATIONS_ON_MISS=1 w .env.")
+        return None
 
     try:
         fetch_and_cache_locations_silent()
@@ -1399,8 +1529,12 @@ def apply_location_to_payload(payload, location_id, caller_name):
     return payload
 
 
+def get_ticket_caller_label(cdr):
+    return first_non_empty(cdr.get("from_dispname"), cdr.get("from_no"), "nieznany")
+
+
 def build_missed_call_payload(cdr, caller_user_id=None, location_id=None):
-    title = f"Nieodebrane Polaczenie od {cdr['from_no']}"
+    title = f"Nieodebrane Polaczenie od {get_ticket_caller_label(cdr)}"
 
     content = (
         "Automatyczne zgloszenie utworzone na podstawie nieodebranego polaczenia z 3CX.\n\n"
@@ -1432,7 +1566,7 @@ def build_missed_call_payload(cdr, caller_user_id=None, location_id=None):
 
 
 def build_answered_call_payload(cdr, owner_id, caller_user_id=None, location_id=None):
-    title = f"Polaczenie telefoniczne od {cdr['from_no']}"
+    title = f"Polaczenie telefoniczne od {get_ticket_caller_label(cdr)}"
 
     content = (
         "Automatyczne zgloszenie utworzone na podstawie rekordu CDR z 3CX.\n\n"

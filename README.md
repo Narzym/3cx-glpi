@@ -1,36 +1,42 @@
-# 3cxToGLPI Admin Panel v11
+# 3cxToGLPI Admin Panel v1.11
 
-Zmiany w v11:
 
-- requester jest dopasowywany z `from-dispname` do cache `glpi_users`
-- jesli requester nie znajdzie sie w cache ani w GLPI, ticket dalej tworzy sie normalnie z pustym requesterem
-- jezeli `from-dispname` wyglada jak sala, np. `sala 443`, requester zostaje pusty, a kod probuje ustawic `locations_id` w tickecie
-- dodana baza/cache lokalizacji GLPI: `glpi_locations`
-- dodane submenu panelu: `Opcje bazy lokalizacji GLPI`
-- przy update lokalizacji loguje jeden przykladowy surowy payload z GLPI
-- usuniete stare kolumny userow z kodu: `normalized_full_name`, `updated_at`
-- aktualna baza userow GLPI: `glpi_user_id`, `email`, `full_name`, `first_name`, `last_name`
-- aktualna baza lokalizacji GLPI: `glpi_location_id`, `room_number`, `name`, `full_path`
+Zmiany v12:
 
-Aktualna kolejnosc CDR:
+- poprawione obslugiwanie bledu `ERROR_RIGHT_MISSING` przy pobieraniu lokalizacji GLPI,
+- gdy API user nie ma prawa do `Location`, kod pokazuje jasny komunikat zamiast enigmatycznego 403,
+- ticket z telefonu sali dalej dziala nawet bez lokalizacji: requester pusty, lokalizacja pusta, ticket idzie dalej,
+- przy cache miss lokalizacji kod domyslnie nie probuje pobierac lokalizacji online przy kazdym polaczeniu, zeby nie spamowac logow 403 i nie spowalniac ticketow,
+- lokalizacje najlepiej odswiezac z panelu po nadaniu uprawnien w GLPI,
+- `glpi_users` zostaje bez starych kolumn `normalized_full_name` i `updated_at`.
+
+## Wazne
+
+Blad:
 
 ```text
-callid, duration, from-no, from-dispname, to-no, final-dn, final-dispname
+["ERROR_RIGHT_MISSING", "Brak uprawnien do wykonania tej akcji."]
 ```
 
-Po podmianie plikow zalecane akcje w panelu:
+oznacza, ze token/user API nie ma prawa odczytu do lokalizacji GLPI. Endpoint `/Location` jest OK, ale profil usera API musi miec prawo odczytu lokalizacji/list rozwijanych.
+
+Po poprawie uprawnien w GLPI wejdz w panel:
 
 ```text
-Opcje bazy userow GLPI -> Wyzeruj baze userow GLPI
-Opcje bazy userow GLPI -> Updatuj baze userow z GLPI
-Opcje bazy lokalizacji GLPI -> Wyzeruj baze lokalizacji GLPI
 Opcje bazy lokalizacji GLPI -> Updatuj baze lokalizacji z GLPI
-Opcje bazy polaczen -> Wyzeruj baze polaczen
 ```
 
-Zmienne `.env`, opcjonalne:
+## Opcjonalnie
+
+Domyslnie aplikacja nie robi online fetch lokalizacji przy kazdym cache miss. Jezeli jednak chcesz to wlaczyc:
 
 ```env
-GLPI_LOCATION_PAGE_SIZE=200
-GLPI_SET_ROOM_AS_LOCATION=1
+GLPI_AUTO_FETCH_LOCATIONS_ON_MISS=1
 ```
+
+## v1.11
+
+- Tytul ticketu uzywa `from-dispname`, a nie `from-no`.
+- Lokalizacja GLPI odpala sie tylko, gdy `from-dispname` zawiera keyword `sala`.
+- Panel pokazuje wersje aplikacji w naglowku.
+- `it_cdr` dostaje brakujace kolumny automatycznie, zeby update nie wywalal sie na starej tabeli.

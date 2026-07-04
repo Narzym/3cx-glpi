@@ -126,7 +126,7 @@ def draw_header(screen, subtitle=None, footer=True):
 
     height, width = screen.getmaxyx()
 
-    title = "3cxToGLPI Admin Panel"
+    title = f"3cxToGLPI Admin Panel v{getattr(cfg, 'APP_VERSION', '1.11')}"
     safe_addstr(screen, 1, max(2, (width - len(title)) // 2), title, curses.A_BOLD | curses.color_pair(COLOR_CYAN))
 
     status, attr = get_service_status_label()

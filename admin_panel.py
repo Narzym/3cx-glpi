@@ -127,7 +127,7 @@ def draw_header(screen, subtitle=None, footer=True):
 
     height, width = screen.getmaxyx()
 
-    title = f"3cxToGLPI Admin Panel v{getattr(cfg, 'APP_VERSION', '1.13')}"
+    title = f"3cxToGLPI Admin Panel v{getattr(cfg, 'APP_VERSION', '1.14')}"
     safe_addstr(screen, 1, max(2, (width - len(title)) // 2), title, curses.A_BOLD | curses.color_pair(COLOR_MAGENTA))
 
     status, attr = get_service_status_label()
@@ -507,7 +507,7 @@ def format_sql_table(headers, rows, max_widths=None):
     return "\n".join(lines)
 
 
-def query_sqlite(query, max_widths=None):
+def query_sqlite(query, max_widths=None, show_query=True):
     try:
         conn = sqlite3.connect(cfg.DB_PATH)
         cursor = conn.cursor()
@@ -516,7 +516,11 @@ def query_sqlite(query, max_widths=None):
         headers = [description[0] for description in cursor.description]
         conn.close()
 
-        return f"Query: {query}\nLiczba rekordow: {len(rows)}\n\n" + format_sql_table(headers, rows, max_widths=max_widths)
+        header = f"Liczba rekordow: {len(rows)}\n\n"
+        if show_query:
+            header = f"Query: {query}\n" + header
+
+        return header + format_sql_table(headers, rows, max_widths=max_widths)
 
     except sqlite3.Error as e:
         try:
@@ -524,7 +528,11 @@ def query_sqlite(query, max_widths=None):
         except Exception:
             pass
 
-        return f"Query: {query}\nBLAD SQLite: {type(e).__name__}: {e}\n\nNajpewniej tabela ma stary schemat albo jeszcze nie istnieje. Wyzeruj/odswiez odpowiednia baze z menu."
+        text = f"BLAD SQLite: {type(e).__name__}: {e}\n\nNajpewniej tabela ma stary schemat albo jeszcze nie istnieje. Wyzeruj/odswiez odpowiednia baze z menu."
+        if show_query:
+            text = f"Query: {query}\n" + text
+
+        return text
 
 
 def show_cdr_records(screen):
@@ -532,7 +540,7 @@ def show_cdr_records(screen):
         SELECT
             id,
             substr(created_at, 1, 16) AS created,
-            substr(callid, -8) AS callid,
+            substr(callid, -4) AS callid,
             duration AS dur,
             "from-no" AS from_no,
             "from-dispname" AS from_name,
@@ -551,7 +559,7 @@ def show_cdr_records(screen):
     max_widths = {
         "id": 4,
         "created": 16,
-        "callid": 8,
+        "callid": 4,
         "dur": 8,
         "from_no": 12,
         "from_name": 22,
@@ -565,8 +573,8 @@ def show_cdr_records(screen):
         "error": 28,
     }
 
-    text = query_sqlite(query, max_widths=max_widths)
-    text = "Widok skrocony: callid = ostatnie 8 znakow, dlugie pola sa uciete.\n\n" + text
+    text = query_sqlite(query, max_widths=max_widths, show_query=False)
+    text = "Widok skrocony: callid = ostatnie 4 znaki, dlugie pola sa uciete.\n\n" + text
     show_scrollable_text(screen, "Rekordy bazy polaczen", text, start_bottom=False, wrap=False)
 
 
@@ -644,8 +652,10 @@ def add_label_parts(screen, y, x, parts, selected=False):
     for text, attr in parts:
         text = str(text)
 
-        if selected and attr == curses.A_NORMAL:
-            attr = curses.color_pair(COLOR_REVERSE) | curses.A_BOLD
+        if selected:
+            # Selected text ma byc zawsze czarny na light magenta,
+            # nawet gdy normalnie fragment byl zielony/czerwony.
+            attr = curses.color_pair(COLOR_REVERSE)
 
         safe_addstr(screen, y, current_x, text, attr)
         current_x += len(text)
@@ -673,7 +683,7 @@ def draw_menu(screen, title, items, selected_index, live_feed=False):
             break
 
         prefix = "➜ " if index == selected_index else "  "
-        selected_attr = curses.color_pair(COLOR_REVERSE) | curses.A_BOLD
+        selected_attr = curses.color_pair(COLOR_REVERSE)
 
         if "label_parts" in item:
             safe_addstr(screen, y, 4, prefix, selected_attr if index == selected_index else curses.A_NORMAL)
@@ -932,8 +942,9 @@ def curses_main(screen):
     curses.init_pair(COLOR_GREEN, curses.COLOR_GREEN, -1)
     curses.init_pair(COLOR_RED, curses.COLOR_RED, -1)
     curses.init_pair(COLOR_YELLOW, curses.COLOR_YELLOW, -1)
-    curses.init_pair(COLOR_MAGENTA, curses.COLOR_MAGENTA, -1)
-    curses.init_pair(COLOR_REVERSE, curses.COLOR_BLACK, curses.COLOR_MAGENTA)
+    primary_magenta = 13 if curses.COLORS > 13 else curses.COLOR_MAGENTA
+    curses.init_pair(COLOR_MAGENTA, primary_magenta, -1)
+    curses.init_pair(COLOR_REVERSE, curses.COLOR_BLACK, primary_magenta)
 
     core.init_db()
 

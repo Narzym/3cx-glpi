@@ -265,9 +265,7 @@ def create_glpi_users_table(cursor):
             email TEXT,
             full_name TEXT,
             first_name TEXT,
-            last_name TEXT,
-            normalized_full_name TEXT,
-            updated_at TEXT NOT NULL
+            last_name TEXT
         )
     ''')
 
@@ -715,7 +713,6 @@ def upsert_glpi_users(users, replace=False):
 
     create_glpi_users_table(cursor)
 
-    now = get_now_string()
     inserted = 0
 
     for user in users:
@@ -726,7 +723,6 @@ def upsert_glpi_users(users, replace=False):
 
         email = extract_user_email(user)
         first_name, last_name, full_name = build_user_names(user)
-        normalized_full_name = normalize_name(full_name)
 
         if not full_name and not email:
             continue
@@ -737,26 +733,20 @@ def upsert_glpi_users(users, replace=False):
                 email,
                 full_name,
                 first_name,
-                last_name,
-                normalized_full_name,
-                updated_at
+                last_name
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(glpi_user_id) DO UPDATE SET
                 email = excluded.email,
                 full_name = excluded.full_name,
                 first_name = excluded.first_name,
-                last_name = excluded.last_name,
-                normalized_full_name = excluded.normalized_full_name,
-                updated_at = excluded.updated_at
+                last_name = excluded.last_name
         ''', (
             glpi_user_id,
             email,
             full_name,
             first_name,
-            last_name,
-            normalized_full_name,
-            now
+            last_name
         ))
 
         inserted += 1
@@ -778,7 +768,7 @@ def find_glpi_user_in_cache(person_name, label="osoba"):
     cursor = conn.cursor()
 
     cursor.execute('''
-        SELECT glpi_user_id, email, full_name, first_name, last_name, normalized_full_name
+        SELECT glpi_user_id, email, full_name, first_name, last_name
         FROM glpi_users
     ''')
     rows = cursor.fetchall()
@@ -787,8 +777,13 @@ def find_glpi_user_in_cache(person_name, label="osoba"):
 
     matches = []
 
-    for glpi_user_id, email, full_name, first_name, last_name, normalized_full_name in rows:
-        candidates = [full_name, f"{first_name} {last_name}".strip(), normalized_full_name]
+    for glpi_user_id, email, full_name, first_name, last_name in rows:
+        candidates = [
+            full_name,
+            f"{first_name} {last_name}".strip(),
+            f"{last_name} {first_name}".strip(),
+            email,
+        ]
 
         if any(names_match(person_name, candidate) for candidate in candidates if candidate):
             matches.append((glpi_user_id, email, full_name))

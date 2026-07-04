@@ -64,14 +64,18 @@ Opcje w panelu:
 
 - menu glowne: uruchom/zatrzymaj usluge, systemd service, opcje bazy polaczen, opcje bazy userow GLPI, pokaz logi
 - opcje bazy polaczen: wyzeruj baze, pokaz rekordy `SELECT * FROM it_cdr`, ustaw limit, statystyki
-- opcje bazy userow GLPI: updatuj cache z GLPI, wyzeruj cache, pokaz rekordy `SELECT glpi_user_id, email, full_name FROM glpi_users`, statystyki
+- opcje bazy userow GLPI: updatuj cache z GLPI, wyzeruj cache, pokaz rekordy `SELECT glpi_user_id, email, full_name, first_name, last_name FROM glpi_users ORDER BY glpi_user_id`, statystyki
 
 Limit bazy CDR jest w tabeli `settings` jako `cdr_max_records`. Wartosc: liczba >= 10 albo `unlimited`.
 
 Tabela cache userow GLPI ma teraz tylko:
 
 ```text
-glpi_user_id, email, full_name
+glpi_user_id, email, full_name, first_name, last_name
 ```
+
+Email jest brany najpierw z klasycznych pol mailowych GLPI (`email`, `email_default`, `default_email`). Jezeli sa puste, a `name` wyglada jak adres mailowy, wtedy email jest brany z `name`.
+
+Przy kazdym update cache userow aplikacja zapisuje do logow jeden przykladowy surowy payload usera z GLPI, zeby bylo widac, jakie pola faktycznie oddaje API.
 
 Przy starcie aplikacji stara wersja tabeli `glpi_users` zostanie usunieta i utworzona od nowa bez migracji.

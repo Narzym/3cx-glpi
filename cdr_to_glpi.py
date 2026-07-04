@@ -6,6 +6,7 @@ import os
 import errno
 import re
 import unicodedata
+import json
 import requests
 from io import StringIO
 from datetime import datetime
@@ -276,11 +277,17 @@ def get_table_columns(cursor, table_name):
 
 def ensure_glpi_users_table(cursor):
     """
-    Nowa, uproszczona cache baza GLPI.
-    Stara tabela jest kasowana bez migracji, bo miala za duzo pol i mieslala kolumny.
+    Cache baza GLPI.
+    Stara tabela jest kasowana bez migracji, bo wolimy czysta strukture niz SQL-owy bigos.
     """
 
-    expected_columns = ["glpi_user_id", "email", "full_name"]
+    expected_columns = [
+        "glpi_user_id",
+        "email",
+        "full_name",
+        "first_name",
+        "last_name"
+    ]
     current_columns = get_table_columns(cursor, "glpi_users")
 
     if current_columns and current_columns != expected_columns:
@@ -290,7 +297,9 @@ def ensure_glpi_users_table(cursor):
         CREATE TABLE IF NOT EXISTS glpi_users (
             glpi_user_id INTEGER PRIMARY KEY,
             email TEXT,
-            full_name TEXT
+            full_name TEXT,
+            first_name TEXT,
+            last_name TEXT
         )
     """)
 
@@ -651,24 +660,60 @@ def first_non_empty(*values):
     return ""
 
 
+def extract_user_first_name(user):
+    return first_non_empty(
+        user.get("firstname"),
+        user.get("first_name"),
+        user.get("given_name")
+    )
+
+
+def extract_user_last_name(user):
+    return first_non_empty(
+        user.get("realname"),
+        user.get("lastname"),
+        user.get("last_name"),
+        user.get("surname")
+    )
+
+
 def build_user_full_name(user):
-    firstname = first_non_empty(user.get("firstname"))
-    realname = first_non_empty(user.get("realname"))
+    first_name = extract_user_first_name(user)
+    last_name = extract_user_last_name(user)
     name = first_non_empty(user.get("name"))
 
-    full_from_names = " ".join(part for part in [firstname, realname] if part).strip()
+    full_from_names = " ".join(part for part in [first_name, last_name] if part).strip()
 
     # W GLPI pole name czesto jest loginem albo mailem. Pelne imie bierzemy najpierw
     # z firstname + realname, a name tylko awaryjnie, jesli nie ma nic lepszego.
     return first_non_empty(full_from_names, name)
 
 
+def looks_like_email(value):
+    value = str(value or "").strip()
+    return "@" in value and "." in value.split("@")[-1]
+
+
 def extract_user_email(user):
-    return first_non_empty(
+    email = first_non_empty(
         user.get("email"),
         user.get("email_default"),
         user.get("default_email")
     )
+
+    # U Ciebie GLPI wyglada tak, ze pole name czesto jest loginem-mailem.
+    # Dlatego jesli klasyczne pola mailowe sa puste, bierzemy name jako email.
+    if not email and looks_like_email(user.get("name")):
+        email = first_non_empty(user.get("name"))
+
+    return email
+
+
+def format_sample_glpi_user_payload(user):
+    try:
+        return json.dumps(user, ensure_ascii=False, indent=2, sort_keys=True)
+    except Exception:
+        return repr(user)
 
 
 def upsert_glpi_users(users, replace=False):
@@ -688,6 +733,8 @@ def upsert_glpi_users(users, replace=False):
             continue
 
         email = extract_user_email(user)
+        first_name = extract_user_first_name(user)
+        last_name = extract_user_last_name(user)
         full_name = build_user_full_name(user)
 
         if not full_name:
@@ -697,16 +744,22 @@ def upsert_glpi_users(users, replace=False):
             INSERT INTO glpi_users (
                 glpi_user_id,
                 email,
-                full_name
+                full_name,
+                first_name,
+                last_name
             )
-            VALUES (?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(glpi_user_id) DO UPDATE SET
                 email = excluded.email,
-                full_name = excluded.full_name
+                full_name = excluded.full_name,
+                first_name = excluded.first_name,
+                last_name = excluded.last_name
         """, (
             glpi_user_id,
             email,
-            full_name
+            full_name,
+            first_name,
+            last_name
         ))
 
         inserted += 1
@@ -899,6 +952,13 @@ def fetch_glpi_users():
 def refresh_glpi_users_cache():
     log("GLPI USER", "Pobieram userow z GLPI do cache...")
     users = fetch_glpi_users()
+
+    if users:
+        log("GLPI USER SAMPLE", "Przykladowy surowy payload jednego usera z GLPI:")
+        log("GLPI USER SAMPLE", format_sample_glpi_user_payload(users[0]))
+    else:
+        log("GLPI USER SAMPLE", "GLPI zwrocilo pusta liste userow, nie ma przykladowego payloadu.")
+
     count = upsert_glpi_users(users, replace=True)
     log("GLPI USER", f"Zaktualizowano cache userow GLPI. Zapisano: {count}")
     return count
@@ -916,6 +976,11 @@ def resolve_caller_user_id(cdr):
 
     try:
         users = fetch_glpi_users()
+
+        if users:
+            log("GLPI USER SAMPLE", "Przykladowy surowy payload jednego usera z GLPI przy online fetch:")
+            log("GLPI USER SAMPLE", format_sample_glpi_user_payload(users[0]))
+
         saved = upsert_glpi_users(users, replace=False)
         log("GLPI USER", f"Online GLPI fetch OK. Zapisano/odswiezono userow: {saved}")
     except Exception as e:

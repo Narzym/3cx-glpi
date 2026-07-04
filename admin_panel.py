@@ -455,7 +455,7 @@ def show_glpi_users_records(screen):
     show_sqlite_query(
         screen,
         "Rekordy bazy userow GLPI",
-        "SELECT glpi_user_id, email, full_name FROM glpi_users ORDER BY glpi_user_id"
+        "SELECT glpi_user_id, email, full_name, first_name, last_name FROM glpi_users ORDER BY glpi_user_id"
     )
 
 

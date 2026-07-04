@@ -1,83 +1,16 @@
-# cdr_to_glpi.py
-
 import socket
 import time
 import sqlite3
 import csv
 import os
 import errno
+import re
+import unicodedata
 import requests
 from io import StringIO
 from datetime import datetime
-from zoneinfo import ZoneInfo
-from dotenv import load_dotenv
 
-load_dotenv()
-
-# =========================
-# KONFIGURACJA 3CX
-# =========================
-
-HOST = "212.180.155.28"
-PORT = 5001
-
-RECONNECT_DELAY = 5
-DB_PATH = "cdrdatabase.db"
-
-LOG_PATH = os.getenv("LOG_PATH", "logs/cdr_to_glpi.log")
-
-IT_NUMBERS = {"517", "699", "717", "519", "524", "526", "528", "529"}  # pierwsze 3 - kolejki, kolejne 5 - extensions pracownikow
-
-
-# =========================
-# KONFIGURACJA TCP KEEPALIVE
-# =========================
-
-TCP_KEEPALIVE_IDLE = 60          # po ilu sekundach bez ruchu zaczac sprawdzac polaczenie
-TCP_KEEPALIVE_INTERVAL = 10      # co ile sekund wysylac probe keepalive
-TCP_KEEPALIVE_COUNT = 3          # ile nieudanych prob zanim system uzna polaczenie za martwe
-TCP_USER_TIMEOUT_MS = 30000      # limit oczekiwania na potwierdzenie danych, jesli system wspiera
-
-
-# =========================
-# KONFIGURACJA CZASU
-# =========================
-
-TIMEZONE = ZoneInfo("Europe/Warsaw")
-
-MISSED_CALL_START_HOUR = 8
-MISSED_CALL_END_HOUR = 20
-
-
-# =========================
-# KONFIGURACJA GLPI REST API V1
-# =========================
-
-GLPI_API_URL = os.getenv("GLPI_API_URL")
-
-GLPI_APP_TOKEN = os.getenv("GLPI_APP_TOKEN")
-GLPI_USER_TOKEN = os.getenv("GLPI_USER_TOKEN")
-
-
-# =========================
-# MAPOWANIE GLPI
-# =========================
-
-GLPI_HELPDESK_GROUP_ID = 27
-GLPI_CATEGORY_ID = 16
-
-GLPI_STATUS_NEW = 1
-GLPI_STATUS_CLOSED = 6
-
-MISSED_CALL_FINAL_DNS = {"517", "699", "717", "519", "524", "526", "528", "529"}
-
-OWNER_BY_FINAL_DN = {
-    "519": 193,     # Grzegorz
-    "524": 172,     # Mateusz
-    "526": 154,     # Wojciech
-    "528": 213,     # Michal
-    "529": 187      # Jan
-}
+import config as cfg
 
 
 # =========================
@@ -91,17 +24,17 @@ class GLPIRequestError(Exception):
 
 
 def get_log_timestamp():
-    return datetime.now(TIMEZONE).strftime("%y-%m-%d %H:%M:%S")
+    return datetime.now(cfg.TIMEZONE).strftime("%y-%m-%d %H:%M:%S")
 
 
 def write_log_to_file(log_line):
     try:
-        log_dir = os.path.dirname(LOG_PATH)
+        log_dir = os.path.dirname(cfg.LOG_PATH)
 
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
 
-        with open(LOG_PATH, "a", encoding="utf-8") as file:
+        with open(cfg.LOG_PATH, "a", encoding="utf-8") as file:
             file.write(log_line + "\n")
 
     except Exception:
@@ -114,11 +47,11 @@ def log(tag, message):
     if "\n" in message:
         for line in message.splitlines():
             log_line = f"{get_log_timestamp()} [{tag}] {line}"
-            print(log_line)
+            print(log_line, flush=True)
             write_log_to_file(log_line)
     else:
         log_line = f"{get_log_timestamp()} [{tag}] {message}"
-        print(log_line)
+        print(log_line, flush=True)
         write_log_to_file(log_line)
 
 
@@ -132,17 +65,17 @@ def truncate_text(value, limit=3000):
 
 
 def glpi_url(path):
-    if not GLPI_API_URL:
+    if not cfg.GLPI_API_URL:
         raise ValueError("Brakuje GLPI_API_URL w .env")
 
-    return GLPI_API_URL.rstrip("/") + "/" + path.lstrip("/")
+    return cfg.GLPI_API_URL.rstrip("/") + "/" + path.lstrip("/")
 
 
 def check_glpi_env():
     required = {
-        "GLPI_API_URL": GLPI_API_URL,
-        "GLPI_APP_TOKEN": GLPI_APP_TOKEN,
-        "GLPI_USER_TOKEN": GLPI_USER_TOKEN
+        "GLPI_API_URL": cfg.GLPI_API_URL,
+        "GLPI_APP_TOKEN": cfg.GLPI_APP_TOKEN,
+        "GLPI_USER_TOKEN": cfg.GLPI_USER_TOKEN
     }
 
     for key, value in required.items():
@@ -158,12 +91,12 @@ def get_response_text(response):
 
 
 def is_missed_call_ticket_time():
-    now = datetime.now(TIMEZONE)
-    return MISSED_CALL_START_HOUR <= now.hour < MISSED_CALL_END_HOUR
+    now = datetime.now(cfg.TIMEZONE)
+    return cfg.MISSED_CALL_START_HOUR <= now.hour < cfg.MISSED_CALL_END_HOUR
 
 
 def get_now_string():
-    return datetime.now(TIMEZONE).strftime("%d-%m-%Y %H:%M:%S")
+    return datetime.now(cfg.TIMEZONE).strftime("%d-%m-%Y %H:%M:%S")
 
 
 def duration_to_seconds(duration):
@@ -223,14 +156,14 @@ def is_missed_call_cdr(cdr):
     final_number = cdr["final_number"]
     duration = cdr["duration"]
 
-    return final_number in MISSED_CALL_FINAL_DNS and is_zero_duration(duration)
+    return final_number in cfg.MISSED_CALL_FINAL_DNS and is_zero_duration(duration)
 
 
 def get_connection_duration(start_time):
     if not start_time:
         return "brak danych"
 
-    seconds = int((datetime.now(TIMEZONE) - start_time).total_seconds())
+    seconds = int((datetime.now(cfg.TIMEZONE) - start_time).total_seconds())
     return f"{seconds}s"
 
 
@@ -285,20 +218,20 @@ def configure_tcp_keepalive(sock):
     settings.append("SO_KEEPALIVE=1")
 
     if hasattr(socket, "TCP_KEEPIDLE"):
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, TCP_KEEPALIVE_IDLE)
-        settings.append(f"TCP_KEEPIDLE={TCP_KEEPALIVE_IDLE}")
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, cfg.TCP_KEEPALIVE_IDLE)
+        settings.append(f"TCP_KEEPIDLE={cfg.TCP_KEEPALIVE_IDLE}")
 
     if hasattr(socket, "TCP_KEEPINTVL"):
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, TCP_KEEPALIVE_INTERVAL)
-        settings.append(f"TCP_KEEPINTVL={TCP_KEEPALIVE_INTERVAL}")
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, cfg.TCP_KEEPALIVE_INTERVAL)
+        settings.append(f"TCP_KEEPINTVL={cfg.TCP_KEEPALIVE_INTERVAL}")
 
     if hasattr(socket, "TCP_KEEPCNT"):
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, TCP_KEEPALIVE_COUNT)
-        settings.append(f"TCP_KEEPCNT={TCP_KEEPALIVE_COUNT}")
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, cfg.TCP_KEEPALIVE_COUNT)
+        settings.append(f"TCP_KEEPCNT={cfg.TCP_KEEPALIVE_COUNT}")
 
     if hasattr(socket, "TCP_USER_TIMEOUT"):
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, TCP_USER_TIMEOUT_MS)
-        settings.append(f"TCP_USER_TIMEOUT={TCP_USER_TIMEOUT_MS}ms")
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, cfg.TCP_USER_TIMEOUT_MS)
+        settings.append(f"TCP_USER_TIMEOUT={cfg.TCP_USER_TIMEOUT_MS}ms")
 
     return ", ".join(settings)
 
@@ -307,8 +240,63 @@ def configure_tcp_keepalive(sock):
 # BAZA DANYCH
 # =========================
 
+def db_connect():
+    return sqlite3.connect(cfg.DB_PATH)
+
+
+def column_exists(cursor, table_name, column_name):
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    columns = [row[1] for row in cursor.fetchall()]
+    return column_name in columns
+
+
+def add_column_if_missing(cursor, table_name, column_name, column_definition):
+    if not column_exists(cursor, table_name, column_name):
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
+
+
+def normalize_cdr_limit_value(value):
+    value = str(value).strip().lower()
+
+    if value in ("unlimited", "bez limitu", "none", "0"):
+        return "unlimited"
+
+    limit = int(value)
+
+    if limit < 10:
+        raise ValueError("Limit rekordow CDR musi byc >= 10 albo unlimited")
+
+    return str(limit)
+
+
+def get_table_columns(cursor, table_name):
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    return [row[1] for row in cursor.fetchall()]
+
+
+def ensure_glpi_users_table(cursor):
+    """
+    Nowa, uproszczona cache baza GLPI.
+    Stara tabela jest kasowana bez migracji, bo miala za duzo pol i mieslala kolumny.
+    """
+
+    expected_columns = ["glpi_user_id", "email", "full_name"]
+    current_columns = get_table_columns(cursor, "glpi_users")
+
+    if current_columns and current_columns != expected_columns:
+        cursor.execute("DROP TABLE IF EXISTS glpi_users")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS glpi_users (
+            glpi_user_id INTEGER PRIMARY KEY,
+            email TEXT,
+            full_name TEXT
+        )
+    """)
+
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -318,22 +306,151 @@ def init_db():
             callid TEXT,
             duration TEXT,
             caller_number TEXT,
+            caller_name TEXT,
             dialed_number TEXT,
             final_number TEXT,
             final_name TEXT,
             zrobiony INTEGER NOT NULL DEFAULT 0,
             glpi_ticket_id TEXT,
             glpi_status_code INTEGER,
-            glpi_error TEXT
+            glpi_error TEXT,
+            glpi_requester_user_id TEXT
         )
     """)
+
+    add_column_if_missing(cursor, "it_cdr", "caller_name", "TEXT")
+    add_column_if_missing(cursor, "it_cdr", "glpi_requester_user_id", "TEXT")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+
+    ensure_glpi_users_table(cursor)
+
+    default_limit = normalize_cdr_limit_value(cfg.CDR_MAX_RECORDS_DEFAULT)
+    cursor.execute("""
+        INSERT OR IGNORE INTO settings (key, value)
+        VALUES ('cdr_max_records', ?)
+    """, (default_limit,))
+
+    conn.commit()
+    conn.close()
+
+
+def get_setting(key, default_value=None):
+    conn = db_connect()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+
+    conn.close()
+
+    if not row:
+        return default_value
+
+    return row[0]
+
+
+def set_setting(key, value):
+    conn = db_connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO settings (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    """, (key, str(value)))
+
+    conn.commit()
+    conn.close()
+
+
+def get_cdr_max_records():
+    value = get_setting("cdr_max_records", cfg.CDR_MAX_RECORDS_DEFAULT)
+    value = normalize_cdr_limit_value(value)
+
+    if value == "unlimited":
+        return None
+
+    return int(value)
+
+
+def get_cdr_max_records_label():
+    limit = get_cdr_max_records()
+
+    if limit is None:
+        return "unlimited"
+
+    return str(limit)
+
+
+def set_cdr_max_records(value):
+    normalized = normalize_cdr_limit_value(value)
+    set_setting("cdr_max_records", normalized)
+    cleanup_it_cdr_limit()
+    return normalized
+
+
+def cleanup_it_cdr_limit():
+    limit = get_cdr_max_records()
+
+    if limit is None:
+        return 0
+
+    conn = db_connect()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM it_cdr")
+    before = cursor.fetchone()[0]
+
+    cursor.execute("""
+        DELETE FROM it_cdr
+        WHERE id NOT IN (
+            SELECT id
+            FROM it_cdr
+            ORDER BY id DESC
+            LIMIT ?
+        )
+    """, (limit,))
+
+    deleted = cursor.rowcount if cursor.rowcount is not None else 0
+
+    conn.commit()
+    conn.close()
+
+    if deleted > 0:
+        log("DB", f"Limit CDR={limit}. Usunieto najstarsze rekordy: {deleted}. Bylo: {before}")
+
+    return deleted
+
+
+def reset_it_cdr():
+    conn = db_connect()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM it_cdr")
+    cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'it_cdr'")
+
+    conn.commit()
+    conn.close()
+
+
+def reset_glpi_users():
+    conn = db_connect()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM glpi_users")
 
     conn.commit()
     conn.close()
 
 
 def save_it_cdr(cdr: dict):
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -342,17 +459,19 @@ def save_it_cdr(cdr: dict):
             callid,
             duration,
             caller_number,
+            caller_name,
             dialed_number,
             final_number,
             final_name,
             zrobiony
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         get_now_string(),
         cdr["callid"],
         cdr["duration"],
         cdr["caller_number"],
+        cdr["caller_name"],
         cdr["dialed_number"],
         cdr["final_number"],
         cdr["final_name"],
@@ -361,24 +480,16 @@ def save_it_cdr(cdr: dict):
 
     record_id = cursor.lastrowid
 
-    cursor.execute("""
-        DELETE FROM it_cdr
-        WHERE id NOT IN (
-            SELECT id
-            FROM it_cdr
-            ORDER BY id DESC
-            LIMIT 500
-        )
-    """)
-
     conn.commit()
     conn.close()
+
+    cleanup_it_cdr_limit()
 
     return record_id
 
 
-def mark_as_done(record_id, ticket_id, status_code):
-    conn = sqlite3.connect(DB_PATH)
+def mark_as_done(record_id, ticket_id, status_code, requester_user_id=None):
+    conn = db_connect()
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -386,11 +497,13 @@ def mark_as_done(record_id, ticket_id, status_code):
         SET zrobiony = 1,
             glpi_ticket_id = ?,
             glpi_status_code = ?,
-            glpi_error = NULL
+            glpi_error = NULL,
+            glpi_requester_user_id = ?
         WHERE id = ?
     """, (
         str(ticket_id),
         status_code,
+        str(requester_user_id) if requester_user_id else None,
         record_id
     ))
 
@@ -399,7 +512,7 @@ def mark_as_done(record_id, ticket_id, status_code):
 
 
 def mark_as_failed(record_id, status_code, error):
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -418,18 +531,49 @@ def mark_as_failed(record_id, status_code, error):
     conn.close()
 
 
+def get_db_stats():
+    conn = db_connect()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM it_cdr")
+    cdr_count = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM glpi_users")
+    glpi_users_count = cursor.fetchone()[0]
+
+    conn.close()
+
+    return {
+        "cdr_count": cdr_count,
+        "glpi_users_count": glpi_users_count,
+        "cdr_max_records": get_cdr_max_records_label()
+    }
+
+
 # =========================
 # PARSOWANIE CDR
 # =========================
 
 def parse_cdr_line(line: str):
+    """
+    Nowa struktura CDR:
+    callid, duration, from-no, from-dispname, to-no, final-dn, final-dispname
+
+    Wewnetrznie zostawiamy stare nazwy kluczy, zeby reszta logiki byla czytelna:
+    caller_number = from-no
+    caller_name = from-dispname
+    dialed_number = to-no
+    final_number = final-dn
+    final_name = final-dispname
+    """
+
     reader = csv.reader(StringIO(line))
     values = next(reader)
 
     values = [v.strip() for v in values]
 
-    if len(values) < 6:
-        raise ValueError(f"Za malo wartosci w CDR: {len(values)}")
+    if len(values) < 7:
+        raise ValueError(f"Za malo wartosci w CDR: {len(values)}. Oczekiwano 7 pol.")
 
     callid = values[0]
 
@@ -440,15 +584,175 @@ def parse_cdr_line(line: str):
         "callid": callid,
         "duration": values[1],
         "caller_number": values[2],
-        "dialed_number": values[3],
-        "final_number": values[4],
-        "final_name": values[5],
+        "caller_name": values[3],
+        "dialed_number": values[4],
+        "final_number": values[5],
+        "final_name": values[6],
     }
 
 
 # =========================
-# GLPI REST API V1
+# GLPI USERS CACHE
 # =========================
+
+def normalize_name(value):
+    value = str(value or "").strip()
+
+    value = unicodedata.normalize("NFKD", value)
+    value = value.encode("ascii", "ignore").decode("ascii")
+    value = value.lower()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    value = " ".join(value.split())
+
+    return value
+
+
+def token_set(value):
+    normalized = normalize_name(value)
+    return {token for token in normalized.split() if token}
+
+
+def names_match(caller_name, user_display_name):
+    caller_normalized = normalize_name(caller_name)
+    user_normalized = normalize_name(user_display_name)
+
+    if not caller_normalized or not user_normalized:
+        return False
+
+    if caller_normalized == user_normalized:
+        return True
+
+    caller_tokens = token_set(caller_name)
+    user_tokens = token_set(user_display_name)
+
+    if len(caller_tokens) >= 2 and caller_tokens == user_tokens:
+        return True
+
+    # Dopuszczamy sytuacje typu "Jan Kowalski ext" albo "Kowalski Jan".
+    if len(caller_tokens) >= 2 and caller_tokens.issubset(user_tokens):
+        return True
+
+    if len(user_tokens) >= 2 and user_tokens.issubset(caller_tokens):
+        return True
+
+    return False
+
+
+def first_non_empty(*values):
+    for value in values:
+        if value is None:
+            continue
+
+        value = str(value).strip()
+
+        if value:
+            return value
+
+    return ""
+
+
+def build_user_full_name(user):
+    firstname = first_non_empty(user.get("firstname"))
+    realname = first_non_empty(user.get("realname"))
+    name = first_non_empty(user.get("name"))
+
+    full_from_names = " ".join(part for part in [firstname, realname] if part).strip()
+
+    # W GLPI pole name czesto jest loginem albo mailem. Pelne imie bierzemy najpierw
+    # z firstname + realname, a name tylko awaryjnie, jesli nie ma nic lepszego.
+    return first_non_empty(full_from_names, name)
+
+
+def extract_user_email(user):
+    return first_non_empty(
+        user.get("email"),
+        user.get("email_default"),
+        user.get("default_email")
+    )
+
+
+def upsert_glpi_users(users, replace=False):
+    conn = db_connect()
+    cursor = conn.cursor()
+    ensure_glpi_users_table(cursor)
+
+    if replace:
+        cursor.execute("DELETE FROM glpi_users")
+
+    inserted = 0
+
+    for user in users:
+        try:
+            glpi_user_id = int(user.get("id"))
+        except Exception:
+            continue
+
+        email = extract_user_email(user)
+        full_name = build_user_full_name(user)
+
+        if not full_name:
+            continue
+
+        cursor.execute("""
+            INSERT INTO glpi_users (
+                glpi_user_id,
+                email,
+                full_name
+            )
+            VALUES (?, ?, ?)
+            ON CONFLICT(glpi_user_id) DO UPDATE SET
+                email = excluded.email,
+                full_name = excluded.full_name
+        """, (
+            glpi_user_id,
+            email,
+            full_name
+        ))
+
+        inserted += 1
+
+    conn.commit()
+    conn.close()
+
+    return inserted
+
+
+def find_glpi_user_in_cache(caller_name):
+    caller_name = str(caller_name or "").strip()
+
+    if not caller_name:
+        log("GLPI USER", "Brak from-dispname w CDR, nie da sie dopasowac usera.")
+        return None
+
+    conn = db_connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT glpi_user_id, full_name
+        FROM glpi_users
+    """)
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    matches = []
+
+    for glpi_user_id, full_name in rows:
+        if names_match(caller_name, full_name):
+            matches.append((glpi_user_id, full_name))
+
+    if len(matches) == 1:
+        glpi_user_id, full_name = matches[0]
+        log("GLPI USER", f"Cache hit: '{caller_name}' -> GLPI user id={glpi_user_id}, full_name='{full_name}'")
+        return glpi_user_id
+
+    if len(matches) > 1:
+        log("GLPI USER", f"Cache ambiguous: '{caller_name}' pasuje do {len(matches)} userow: {matches}. Zostawiam puste.")
+        return None
+
+    log("GLPI USER", f"Cache miss: '{caller_name}'. Sprawdzam GLPI online.")
+    return None
+
 
 def get_glpi_session_token():
     check_glpi_env()
@@ -457,15 +761,15 @@ def get_glpi_session_token():
 
     headers = {
         "Content-Type": "application/json",
-        "App-Token": GLPI_APP_TOKEN,
-        "Authorization": f"user_token {GLPI_USER_TOKEN}"
+        "App-Token": cfg.GLPI_APP_TOKEN,
+        "Authorization": f"user_token {cfg.GLPI_USER_TOKEN}"
     }
 
     try:
         response = requests.get(
             url,
             headers=headers,
-            timeout=15
+            timeout=cfg.GLPI_HTTP_TIMEOUT
         )
     except requests.exceptions.RequestException as e:
         raise GLPIRequestError(
@@ -505,7 +809,7 @@ def kill_glpi_session(session_token):
 
     headers = {
         "Content-Type": "application/json",
-        "App-Token": GLPI_APP_TOKEN,
+        "App-Token": cfg.GLPI_APP_TOKEN,
         "Session-Token": session_token
     }
 
@@ -519,7 +823,138 @@ def kill_glpi_session(session_token):
         log("GLPI ERROR", f"Nie udalo sie zamknac sesji: {type(e).__name__}: {e}")
 
 
-def build_missed_call_payload(cdr):
+def fetch_glpi_users():
+    session_token = None
+
+    try:
+        session_token = get_glpi_session_token()
+        users = []
+        start = 0
+        page_size = cfg.GLPI_USER_PAGE_SIZE
+
+        while True:
+            end = start + page_size - 1
+            url = glpi_url("User")
+
+            headers = {
+                "Content-Type": "application/json",
+                "App-Token": cfg.GLPI_APP_TOKEN,
+                "Session-Token": session_token,
+                "Range": f"{start}-{end}"
+            }
+
+            params = {
+                "range": f"{start}-{end}",
+                "is_deleted": "0"
+            }
+
+            try:
+                response = requests.get(
+                    url,
+                    headers=headers,
+                    params=params,
+                    timeout=cfg.GLPI_HTTP_TIMEOUT
+                )
+            except requests.exceptions.RequestException as e:
+                raise GLPIRequestError(
+                    f"Blad polaczenia przy pobieraniu userow GLPI: {type(e).__name__}: {e}"
+                )
+
+            if response.status_code not in (200, 206):
+                raise GLPIRequestError(
+                    f"GLPI User fetch error. HTTP {response.status_code} {response.reason}. Body: {get_response_text(response)}",
+                    response.status_code
+                )
+
+            try:
+                data = response.json()
+            except Exception as e:
+                raise GLPIRequestError(
+                    f"GLPI User zwrocilo niepoprawny JSON. HTTP {response.status_code}. Error: {e}. Body: {get_response_text(response)}",
+                    response.status_code
+                )
+
+            if isinstance(data, dict):
+                data = data.get("data") or data.get("items") or []
+
+            if not isinstance(data, list):
+                raise GLPIRequestError(f"GLPI User zwrocilo dziwny format: {type(data).__name__}")
+
+            users.extend(data)
+
+            if len(data) < page_size or response.status_code == 200:
+                break
+
+            start += page_size
+
+            if start > 100000:
+                raise GLPIRequestError("Przerwano pobieranie userow GLPI: przekroczono 100000 rekordow")
+
+        return users
+
+    finally:
+        kill_glpi_session(session_token)
+
+
+def refresh_glpi_users_cache():
+    log("GLPI USER", "Pobieram userow z GLPI do cache...")
+    users = fetch_glpi_users()
+    count = upsert_glpi_users(users, replace=True)
+    log("GLPI USER", f"Zaktualizowano cache userow GLPI. Zapisano: {count}")
+    return count
+
+
+def resolve_caller_user_id(cdr):
+    caller_name = cdr.get("caller_name")
+
+    log("GLPI USER", f"Dopasowanie osoby dzwoniacej. from-no='{cdr.get('caller_number')}', from-dispname='{caller_name}'")
+
+    user_id = find_glpi_user_in_cache(caller_name)
+
+    if user_id:
+        return user_id
+
+    try:
+        users = fetch_glpi_users()
+        saved = upsert_glpi_users(users, replace=False)
+        log("GLPI USER", f"Online GLPI fetch OK. Zapisano/odswiezono userow: {saved}")
+    except Exception as e:
+        log("GLPI USER", f"Online GLPI fetch FAIL: {type(e).__name__}: {e}. Zostawiam requester pusty.")
+        return None
+
+    user_id = find_glpi_user_in_cache(caller_name)
+
+    if user_id:
+        log("GLPI USER", f"Online match OK: '{caller_name}' -> GLPI user id={user_id}")
+        return user_id
+
+    log("GLPI USER", f"Nie znaleziono usera dla '{caller_name}' ani w cache, ani w GLPI. Zostawiam puste.")
+    return None
+
+
+# =========================
+# GLPI TICKETY
+# =========================
+
+def apply_caller_to_payload(payload, caller_user_id, caller_name):
+    if not caller_user_id:
+        log("GLPI USER", f"Ticket bez osoby dzwoniacej jako requester. caller_name='{caller_name}'")
+        return payload
+
+    input_data = payload.setdefault("input", {})
+
+    if cfg.GLPI_SET_CALLER_AS_REQUESTER:
+        input_data["_users_id_requester"] = caller_user_id
+        log("GLPI USER", f"Dodaje osobe dzwoniaca jako requester: user_id={caller_user_id}")
+
+    if cfg.GLPI_SET_CALLER_AS_RECIPIENT:
+        input_data["users_id_recipient"] = caller_user_id
+        log("GLPI USER", f"Probuje ustawic osobe dzwoniaca jako recipient/tworca: user_id={caller_user_id}")
+
+    return payload
+
+
+def build_missed_call_payload(cdr, caller_user_id=None):
     title = f"Nieodebrane Polaczenie od {cdr['caller_number']}"
 
     content = (
@@ -527,6 +962,7 @@ def build_missed_call_payload(cdr):
         f"Call ID: {cdr['callid']}\n"
         f"Czas trwania: {cdr['duration']}\n"
         f"Numer dzwoniacy: {cdr['caller_number']}\n"
+        f"Nazwa dzwoniacego: {cdr['caller_name']}\n"
         f"Numer wybrany: {cdr['dialed_number']}\n"
         f"Extension nr: {cdr['final_number']}\n"
         f"Nazwa odbierajacego: {cdr['final_name']}\n"
@@ -537,19 +973,19 @@ def build_missed_call_payload(cdr):
             "name": title,
             "content": content,
             "type": 1,
-            "status": GLPI_STATUS_NEW,
+            "status": cfg.GLPI_STATUS_NEW,
             "urgency": 3,
             "impact": 3,
             "priority": 3,
-            "itilcategories_id": GLPI_CATEGORY_ID,
-            "_groups_id_assign": GLPI_HELPDESK_GROUP_ID
+            "itilcategories_id": cfg.GLPI_CATEGORY_ID,
+            "_groups_id_assign": cfg.GLPI_HELPDESK_GROUP_ID
         }
     }
 
-    return payload
+    return apply_caller_to_payload(payload, caller_user_id, cdr.get("caller_name"))
 
 
-def build_answered_call_payload(cdr, owner_id):
+def build_answered_call_payload(cdr, owner_id, caller_user_id=None):
     title = f"Polaczenie telefoniczne od {cdr['caller_number']}"
 
     content = (
@@ -557,6 +993,7 @@ def build_answered_call_payload(cdr, owner_id):
         f"Call ID: {cdr['callid']}\n"
         f"Czas trwania: {cdr['duration']}\n"
         f"Numer dzwoniacy: {cdr['caller_number']}\n"
+        f"Nazwa dzwoniacego: {cdr['caller_name']}\n"
         f"Numer wybrany: {cdr['dialed_number']}\n"
         f"Extension nr: {cdr['final_number']}\n"
         f"Nazwa odbierajacego: {cdr['final_name']}\n"
@@ -567,20 +1004,20 @@ def build_answered_call_payload(cdr, owner_id):
             "name": title,
             "content": content,
             "type": 1,
-            "status": GLPI_STATUS_CLOSED,
+            "status": cfg.GLPI_STATUS_CLOSED,
             "urgency": 3,
             "impact": 3,
             "priority": 3,
-            "itilcategories_id": GLPI_CATEGORY_ID,
+            "itilcategories_id": cfg.GLPI_CATEGORY_ID,
             "_users_id_assign": owner_id,
-            "_groups_id_assign": GLPI_HELPDESK_GROUP_ID
+            "_groups_id_assign": cfg.GLPI_HELPDESK_GROUP_ID
         }
     }
 
-    return payload
+    return apply_caller_to_payload(payload, caller_user_id, cdr.get("caller_name"))
 
 
-def create_glpi_ticket(payload):
+def post_glpi_ticket(payload):
     session_token = None
 
     try:
@@ -590,7 +1027,7 @@ def create_glpi_ticket(payload):
 
         headers = {
             "Content-Type": "application/json",
-            "App-Token": GLPI_APP_TOKEN,
+            "App-Token": cfg.GLPI_APP_TOKEN,
             "Session-Token": session_token
         }
 
@@ -599,7 +1036,7 @@ def create_glpi_ticket(payload):
                 url,
                 headers=headers,
                 json=payload,
-                timeout=15
+                timeout=cfg.GLPI_HTTP_TIMEOUT
             )
         except requests.exceptions.RequestException as e:
             raise GLPIRequestError(
@@ -633,18 +1070,42 @@ def create_glpi_ticket(payload):
         kill_glpi_session(session_token)
 
 
-# =========================
-# DUMMY GLPI
-# =========================
+def create_glpi_ticket(payload):
+    """
+    Tworzy ticket. Jezeli GLPI nie przyjmie pola users_id_recipient albo requestera,
+    probuje jeszcze raz bez problematycznych pol, zeby samo tworzenie ticketu nie padlo.
+    """
 
-# def create_glpi_ticket(payload):
-#     log("DUMMY GLPI", "Ticket NIE zostal wyslany do GLPI.")
-#     log("DUMMY GLPI", f"Payload: {payload}")
-#
-#     fake_status_code = 201
-#     fake_ticket_id = "dummy-ticket-id"
-#
-#     return fake_status_code, fake_ticket_id
+    attempts = []
+
+    original = {"input": dict(payload.get("input", {}))}
+    attempts.append(("pelny payload", original))
+
+    if "users_id_recipient" in original["input"]:
+        no_recipient = {"input": dict(original["input"])}
+        no_recipient["input"].pop("users_id_recipient", None)
+        attempts.append(("bez users_id_recipient", no_recipient))
+
+    if "_users_id_requester" in original["input"] or "users_id_recipient" in original["input"]:
+        no_caller = {"input": dict(original["input"])}
+        no_caller["input"].pop("users_id_recipient", None)
+        no_caller["input"].pop("_users_id_requester", None)
+        attempts.append(("bez caller user fields", no_caller))
+
+    last_error = None
+
+    for label, attempt_payload in attempts:
+        try:
+            if label != "pelny payload":
+                log("GLPI RETRY", f"Ponawiam tworzenie ticketu: {label}")
+
+            return post_glpi_ticket(attempt_payload)
+
+        except GLPIRequestError as e:
+            last_error = e
+            log("GLPI ERROR", f"Proba '{label}' nieudana: {e}")
+
+    raise last_error
 
 
 # =========================
@@ -666,24 +1127,25 @@ def handle_cdr_line(line: str):
 
     dialed_number = cdr["dialed_number"]
 
-    if dialed_number not in IT_NUMBERS:
+    if dialed_number not in cfg.IT_NUMBERS:
         log("SPOZA IT", line)
         return
 
     is_missed_call = is_missed_call_cdr(cdr)
+    caller_user_id = resolve_caller_user_id(cdr)
 
     if is_missed_call:
-        log("CDR TYPE", f"Nieodebrane. duration={cdr['duration']}, final_number={cdr['final_number']}, final_name={cdr['final_name']}")
+        log("CDR TYPE", f"Nieodebrane. duration={cdr['duration']}, final_number={cdr['final_number']}, final_name={cdr['final_name']}, caller_name={cdr['caller_name']}")
 
         if not is_missed_call_ticket_time():
             log("POMINIETO GLPI", "Nieodebrane polaczenie poza godzinami 08:00-20:00. Nie tworze ticketa i nie zapisuje do bazy.")
             return
 
-        payload = build_missed_call_payload(cdr)
+        payload = build_missed_call_payload(cdr, caller_user_id)
 
         try:
             status_code, ticket_id = create_glpi_ticket(payload)
-            log("GLPI SUCCESS", f"Utworzono ticket z nieodebranego polaczenia. Ticket ID: {ticket_id}. HTTP {status_code}")
+            log("GLPI SUCCESS", f"Utworzono ticket z nieodebranego polaczenia. Ticket ID: {ticket_id}. HTTP {status_code}. caller_user_id={caller_user_id}")
 
         except GLPIRequestError as e:
             log("GLPI ERROR", e)
@@ -693,14 +1155,14 @@ def handle_cdr_line(line: str):
 
         return
 
-    log("CDR TYPE", f"Odebrane. duration={cdr['duration']}, final_number={cdr['final_number']}, final_name={cdr['final_name']}")
+    log("CDR TYPE", f"Odebrane. duration={cdr['duration']}, final_number={cdr['final_number']}, final_name={cdr['final_name']}, caller_name={cdr['caller_name']}")
 
     record_id = save_it_cdr(cdr)
 
     log("IT", f"Zapisano odebrany CDR do bazy. ID rekordu: {record_id}")
     log("IT", f"CDR: {line}")
 
-    owner_id = OWNER_BY_FINAL_DN.get(cdr["final_number"])
+    owner_id = cfg.OWNER_BY_FINAL_DN.get(cdr["final_number"])
 
     if not owner_id:
         error = f"Brak przypisanego ownera dla final-dn: {cdr['final_number']}"
@@ -708,13 +1170,13 @@ def handle_cdr_line(line: str):
         mark_as_failed(record_id, None, error)
         return
 
-    payload = build_answered_call_payload(cdr, owner_id)
+    payload = build_answered_call_payload(cdr, owner_id, caller_user_id)
 
     try:
         status_code, ticket_id = create_glpi_ticket(payload)
-        mark_as_done(record_id, ticket_id, status_code)
+        mark_as_done(record_id, ticket_id, status_code, caller_user_id)
 
-        log("GLPI SUCCESS", f"Utworzono ticket z odebranego polaczenia. Ticket ID: {ticket_id}. HTTP {status_code}")
+        log("GLPI SUCCESS", f"Utworzono ticket z odebranego polaczenia. Ticket ID: {ticket_id}. HTTP {status_code}. owner_id={owner_id}. caller_user_id={caller_user_id}")
 
     except GLPIRequestError as e:
         error_text = str(e)
@@ -736,10 +1198,10 @@ def connect_to_3cx():
         connection_started_at = None
 
         try:
-            log("INFO", f"Connecting to 3CX CDR passive socket {HOST}:{PORT}...")
+            log("INFO", f"Connecting to 3CX CDR passive socket {cfg.HOST}:{cfg.PORT}...")
 
-            with socket.create_connection((HOST, PORT), timeout=10) as sock:
-                connection_started_at = datetime.now(TIMEZONE)
+            with socket.create_connection((cfg.HOST, cfg.PORT), timeout=10) as sock:
+                connection_started_at = datetime.now(cfg.TIMEZONE)
 
                 keepalive_info = configure_tcp_keepalive(sock)
 
@@ -770,8 +1232,8 @@ def connect_to_3cx():
 
         except Exception as e:
             log("ERROR", describe_connection_error(e, connection_started_at))
-            log("INFO", f"Reconnecting in {RECONNECT_DELAY}s...")
-            time.sleep(RECONNECT_DELAY)
+            log("INFO", f"Reconnecting in {cfg.RECONNECT_DELAY}s...")
+            time.sleep(cfg.RECONNECT_DELAY)
 
 
 # =========================

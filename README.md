@@ -7,7 +7,6 @@ Pliki:
 - `config.py` - centralny config aplikacji.
 - `cdr_to_glpi.py` - listener CDR + logika GLPI.
 - `admin_panel.py` - terminalowy panel administracyjny.
-- `requirements.txt` - zaleznosci Pythona.
 
 Nowy format CDR:
 
@@ -65,8 +64,14 @@ Opcje w panelu:
 
 - menu glowne: uruchom/zatrzymaj usluge, systemd service, opcje bazy polaczen, opcje bazy userow GLPI, pokaz logi
 - opcje bazy polaczen: wyzeruj baze, pokaz rekordy `SELECT * FROM it_cdr`, ustaw limit, statystyki
-- opcje bazy userow GLPI: updatuj cache z GLPI, wyzeruj cache, pokaz rekordy `SELECT * FROM glpi_users`, statystyki
+- opcje bazy userow GLPI: updatuj cache z GLPI, wyzeruj cache, pokaz rekordy `SELECT glpi_user_id, email, full_name FROM glpi_users`, statystyki
 
 Limit bazy CDR jest w tabeli `settings` jako `cdr_max_records`. Wartosc: liczba >= 10 albo `unlimited`.
 
-Do cache userow GLPI panel uzywa tabeli `glpi_users`. Mozesz ja odswiezyc, podejrzec albo wyzerowac z poziomu panelu.
+Tabela cache userow GLPI ma teraz tylko:
+
+```text
+glpi_user_id, email, full_name
+```
+
+Przy starcie aplikacji stara wersja tabeli `glpi_users` zostanie usunieta i utworzona od nowa bez migracji.

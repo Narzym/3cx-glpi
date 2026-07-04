@@ -5,6 +5,7 @@ import subprocess
 import textwrap
 import io
 import contextlib
+import sys
 
 import config as cfg
 import cdr_to_glpi as core
@@ -145,21 +146,56 @@ def wait_key(screen):
     screen.getch()
 
 
-def show_text(screen, title, text):
+def build_wrapped_lines(text, width):
+    lines = []
+    wrap_width = max(20, width - 8)
+
+    for line in str(text).splitlines():
+        if not line:
+            lines.append("")
+            continue
+
+        wrapped = textwrap.wrap(
+            line,
+            wrap_width,
+            replace_whitespace=False,
+            drop_whitespace=False
+        ) or [""]
+        lines.extend(wrapped)
+
+    if not lines:
+        lines = [""]
+
+    return lines
+
+
+def show_text(screen, title, text, start_at_bottom=False):
     scroll = 0
+    first_draw = True
+    lines_cache = None
+    cache_width = None
 
     while True:
         screen.clear()
         draw_header(screen, title)
 
         height, width = screen.getmaxyx()
-        lines = []
 
-        for line in str(text).splitlines():
-            wrapped = textwrap.wrap(line, max(20, width - 8)) or [""]
-            lines.extend(wrapped)
+        if lines_cache is None or cache_width != width:
+            lines_cache = build_wrapped_lines(text, width)
+            cache_width = width
 
+        lines = lines_cache
         visible_height = max(1, height - 10)
+        max_scroll = max(0, len(lines) - visible_height)
+
+        if first_draw and start_at_bottom:
+            scroll = max_scroll
+            first_draw = False
+        else:
+            first_draw = False
+            scroll = min(max(0, scroll), max_scroll)
+
         visible = lines[scroll:scroll + visible_height]
 
         y = 8
@@ -167,7 +203,15 @@ def show_text(screen, title, text):
             safe_addstr(screen, y, 4, line)
             y += 1
 
-        safe_addstr(screen, height - 3, 3, f"Linie {scroll + 1}-{min(scroll + visible_height, len(lines))}/{len(lines)} | ↑/↓ scroll | q wstecz", curses.A_DIM)
+        start_line = min(scroll + 1, len(lines))
+        end_line = min(scroll + visible_height, len(lines))
+        safe_addstr(
+            screen,
+            height - 3,
+            3,
+            f"Linie {start_line}-{end_line}/{len(lines)} | ↑/↓ scroll | PgUp/PgDn szybciej | Home/End | q wstecz",
+            curses.A_DIM
+        )
         screen.refresh()
 
         key = screen.getch()
@@ -177,12 +221,16 @@ def show_text(screen, title, text):
 
         if key == curses.KEY_UP and scroll > 0:
             scroll -= 1
-        elif key == curses.KEY_DOWN and scroll + visible_height < len(lines):
+        elif key == curses.KEY_DOWN and scroll < max_scroll:
             scroll += 1
         elif key == curses.KEY_PPAGE:
             scroll = max(0, scroll - visible_height)
         elif key == curses.KEY_NPAGE:
-            scroll = min(max(0, len(lines) - visible_height), scroll + visible_height)
+            scroll = min(max_scroll, scroll + visible_height)
+        elif key == curses.KEY_HOME:
+            scroll = 0
+        elif key == curses.KEY_END:
+            scroll = max_scroll
 
 
 def confirm(screen, question):
@@ -336,17 +384,18 @@ def read_last_log_lines(max_lines=300):
         return f"Plik logow jest pusty: {log_path}"
 
     selected_lines = lines[-max_lines:]
-    header = (
-        f"Plik logow: {log_path}\n"
-        f"Pokazuje ostatnie {len(selected_lines)} z {len(lines)} linii.\n"
-        "=" * 70 + "\n"
-    )
+    header = [
+        f"Plik logow: {log_path}",
+        f"Pokazuje ostatnie {len(selected_lines)} z {len(lines)} linii.",
+        ""
+    ]
 
-    return header + "".join(selected_lines)
+    return "\n".join(header) + "\n" + "".join(selected_lines).rstrip()
 
 
 def show_logs(screen):
-    show_text(screen, "Logi", read_last_log_lines())
+    log_path = cfg.LOG_PATH or "brak LOG_PATH"
+    show_text(screen, f"Logi: {log_path}", read_last_log_lines(), start_at_bottom=True)
 
 
 def format_sqlite_query_result(query):
@@ -403,7 +452,11 @@ def show_it_cdr_records(screen):
 
 
 def show_glpi_users_records(screen):
-    show_sqlite_query(screen, "Rekordy bazy userow GLPI", "SELECT * FROM glpi_users")
+    show_sqlite_query(
+        screen,
+        "Rekordy bazy userow GLPI",
+        "SELECT glpi_user_id, email, full_name FROM glpi_users ORDER BY glpi_user_id"
+    )
 
 
 def draw_menu(screen, title, items, selected_index):
@@ -603,7 +656,12 @@ def curses_main(screen):
 
 
 def main():
-    curses.wrapper(curses_main)
+    try:
+        curses.wrapper(curses_main)
+    finally:
+        os.system("clear")
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":

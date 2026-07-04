@@ -25,3 +25,9 @@ python3 admin_panel.py
 ```
 
 Restart service nie jest wymagany dla samych zmian w panelu.
+
+
+## v1.15
+
+- Kolor przewodni ustawiony na xterm 256-color cube r2 g0 b5, czyli numer 93.
+- Zaznaczona opcja ma bialy tekst na kolorze przewodnim.

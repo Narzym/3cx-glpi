@@ -127,7 +127,7 @@ def draw_header(screen, subtitle=None, footer=True):
 
     height, width = screen.getmaxyx()
 
-    title = f"3cxToGLPI Admin Panel v{getattr(cfg, 'APP_VERSION', '1.14')}"
+    title = f"3cxToGLPI Admin Panel v{getattr(cfg, 'APP_VERSION', '1.15')}"
     safe_addstr(screen, 1, max(2, (width - len(title)) // 2), title, curses.A_BOLD | curses.color_pair(COLOR_MAGENTA))
 
     status, attr = get_service_status_label()
@@ -942,9 +942,11 @@ def curses_main(screen):
     curses.init_pair(COLOR_GREEN, curses.COLOR_GREEN, -1)
     curses.init_pair(COLOR_RED, curses.COLOR_RED, -1)
     curses.init_pair(COLOR_YELLOW, curses.COLOR_YELLOW, -1)
-    primary_magenta = 13 if curses.COLORS > 13 else curses.COLOR_MAGENTA
+    # xterm 256-color cube: r2 g0 b5 = 16 + 36*2 + 6*0 + 5 = 93.
+    # Jezeli terminal nie zglasza 256 kolorow, curses spada do zwyklej magenty.
+    primary_magenta = 93 if curses.COLORS > 93 else curses.COLOR_MAGENTA
     curses.init_pair(COLOR_MAGENTA, primary_magenta, -1)
-    curses.init_pair(COLOR_REVERSE, curses.COLOR_BLACK, primary_magenta)
+    curses.init_pair(COLOR_REVERSE, curses.COLOR_WHITE, primary_magenta)
 
     core.init_db()
 

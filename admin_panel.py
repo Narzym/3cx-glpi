@@ -549,7 +549,6 @@ def show_cdr_records(screen):
             "final-dispname" AS final_name,
             zrobiony AS ok,
             glpi_ticket_id AS ticket,
-            glpi_requester_user_id AS req,
             glpi_location_id AS loc,
             glpi_error AS error
         FROM it_cdr
@@ -568,7 +567,6 @@ def show_cdr_records(screen):
         "final_name": 24,
         "ok": 2,
         "ticket": 8,
-        "req": 5,
         "loc": 5,
         "error": 28,
     }

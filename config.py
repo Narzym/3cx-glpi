@@ -9,7 +9,7 @@ load_dotenv()
 # =========================
 
 APP_NAME = "3cxToGLPI"
-APP_VERSION = "1.15"
+APP_VERSION = "1.16"
 SERVICE_NAME = os.getenv("SERVICE_NAME", "cdr_to_glpi.service")
 DB_PATH = os.getenv("DB_PATH", "cdrdatabase.db")
 LOG_PATH = os.getenv("LOG_PATH", "logs/cdr_to_glpi.log")
@@ -86,8 +86,6 @@ GLPI_HTTP_TIMEOUT = int(os.getenv("GLPI_HTTP_TIMEOUT", "15"))
 GLPI_USER_PAGE_SIZE = int(os.getenv("GLPI_USER_PAGE_SIZE", "200"))
 GLPI_LOCATION_PAGE_SIZE = int(os.getenv("GLPI_LOCATION_PAGE_SIZE", "200"))
 
-GLPI_SET_CALLER_AS_REQUESTER = os.getenv("GLPI_SET_CALLER_AS_REQUESTER", "1") == "1"
-GLPI_SET_CALLER_AS_RECIPIENT = os.getenv("GLPI_SET_CALLER_AS_RECIPIENT", "1") == "1"
 GLPI_SET_ROOM_AS_LOCATION = os.getenv("GLPI_SET_ROOM_AS_LOCATION", "1") == "1"
 
 # Przy polaczeniu z sali najpierw szukamy lokalizacji w cache.

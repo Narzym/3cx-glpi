@@ -274,7 +274,6 @@ def create_it_cdr_table(cursor):
             glpi_ticket_id TEXT,
             glpi_status_code INTEGER,
             glpi_error TEXT,
-            glpi_requester_user_id TEXT,
             glpi_location_id TEXT
         )
     ''')
@@ -337,7 +336,6 @@ def ensure_it_cdr_schema(cursor):
         "glpi_ticket_id": "TEXT",
         "glpi_status_code": "INTEGER",
         "glpi_error": "TEXT",
-        "glpi_requester_user_id": "TEXT",
         "glpi_location_id": "TEXT",
     }
 
@@ -619,7 +617,7 @@ def save_it_cdr(cdr: dict):
     return record_id
 
 
-def mark_as_done(record_id, ticket_id, status_code, requester_user_id=None, location_id=None):
+def mark_as_done(record_id, ticket_id, status_code, location_id=None):
     conn = db_connect()
     cursor = conn.cursor()
 
@@ -629,13 +627,11 @@ def mark_as_done(record_id, ticket_id, status_code, requester_user_id=None, loca
             glpi_ticket_id = ?,
             glpi_status_code = ?,
             glpi_error = NULL,
-            glpi_requester_user_id = ?,
             glpi_location_id = ?
         WHERE id = ?
     ''', (
         str(ticket_id),
         status_code,
-        str(requester_user_id) if requester_user_id else None,
         str(location_id) if location_id else None,
         record_id
     ))
@@ -1136,70 +1132,34 @@ def fetch_and_cache_users_silent():
     return saved
 
 
-def resolve_caller_user_id(cdr):
-    caller_name = cdr.get("caller_name")
-
-    log("GLPI USER", f"Dopasowanie osoby dzwoniacej. from-no='{cdr.get('from_no')}', from-dispname='{caller_name}'")
-
-    try:
-        user_id = find_glpi_user_in_cache(caller_name, "caller/from-dispname")
-    except Exception as e:
-        log("GLPI USER", f"Cache lookup FAIL: {type(e).__name__}: {e}. Zostawiam requester pusty i jade dalej.")
-        user_id = None
-
-    if user_id:
-        return user_id
-
-    try:
-        fetch_and_cache_users_silent()
-    except Exception as e:
-        log("GLPI USER", f"Online GLPI fetch FAIL: {type(e).__name__}: {e}. Zostawiam requester pusty.")
-        return None
-
-    try:
-        user_id = find_glpi_user_in_cache(caller_name, "caller/from-dispname")
-    except Exception as e:
-        log("GLPI USER", f"Cache lookup po fetchu FAIL: {type(e).__name__}: {e}. Zostawiam requester pusty.")
-        return None
-
-    if user_id:
-        log("GLPI USER", f"Online match OK: '{caller_name}' -> GLPI user id={user_id}")
-        return user_id
-
-    log("GLPI USER", f"Nie znaleziono usera dla '{caller_name}' ani w cache, ani w GLPI. Zostawiam puste.")
-    return None
-
-
-def resolve_caller_context(cdr):
+def resolve_ticket_location_id(cdr):
     """
-    Zwraca tuple: (caller_user_id, location_id).
-
-    Jesli from-dispname wyglada jak sala, np. 'sala 443', requester zostaje pusty,
-    a kod probuje ustawic lokalizacje ticketu po cache lokalizacji GLPI.
+    Ustawianie requestera po osobie dzwoniacej zostalo calkowicie wylaczone.
+    Tutaj zostaje tylko lokalizacja, i tylko gdy from-dispname zawiera keyword "sala".
     """
 
-    caller_name = cdr.get("caller_name") or ""
+    caller_name = cdr.get("caller_name") or cdr.get("from_dispname") or ""
+
+    if not cfg.GLPI_SET_ROOM_AS_LOCATION:
+        return None
+
     room_number = extract_room_number_from_caller_dispname(caller_name)
 
-    if room_number and cfg.GLPI_SET_ROOM_AS_LOCATION:
-        log("GLPI LOCATION", f"from-dispname ma keyword 'sala'. from-dispname='{caller_name}', room_number='{room_number}'. Requester bedzie pusty.")
+    if not room_number:
+        if not from_dispname_has_sala_keyword(caller_name):
+            log("GLPI LOCATION", f"Brak keywordu 'sala' w from-dispname='{caller_name}'. Nie dotykam lokalizacji.")
+        else:
+            log("GLPI LOCATION", f"from-dispname ma keyword 'sala', ale nie znalazlem numeru sali: '{caller_name}'. Ticket pojdzie bez lokalizacji.")
+        return None
 
-        try:
-            location_id = resolve_location_id_by_room(room_number)
-        except Exception as e:
-            log("GLPI LOCATION", f"Dopasowanie lokalizacji FAIL: {type(e).__name__}: {e}. Ticket pojdzie bez lokalizacji.")
-            location_id = None
-
-        return None, location_id
-
-    if cfg.GLPI_SET_ROOM_AS_LOCATION and not from_dispname_has_sala_keyword(caller_name):
-        log("GLPI LOCATION", f"Brak keywordu 'sala' w from-dispname='{caller_name}'. Nie dotykam lokalizacji.")
+    log("GLPI LOCATION", f"from-dispname ma keyword 'sala'. from-dispname='{caller_name}', room_number='{room_number}'. Requester NIE bedzie ustawiany.")
 
     try:
-        return resolve_caller_user_id(cdr), None
+        return resolve_location_id_by_room(room_number)
     except Exception as e:
-        log("GLPI USER", f"Dopasowanie requestera wysypalo sie, ale NIE blokuje ticketu: {type(e).__name__}: {e}")
-        return None, None
+        log("GLPI LOCATION", f"Dopasowanie lokalizacji FAIL: {type(e).__name__}: {e}. Ticket pojdzie bez lokalizacji.")
+        return None
+
 
 def resolve_owner_id(cdr):
     final_dn = cdr.get("final_dn")
@@ -1557,24 +1517,6 @@ def resolve_location_id_by_room(room_number):
 # GLPI TICKETY
 # =========================
 
-def apply_caller_to_payload(payload, caller_user_id, caller_name):
-    if not caller_user_id:
-        log("GLPI USER", f"Ticket bez osoby dzwoniacej jako requester. caller_name='{caller_name}'")
-        return payload
-
-    input_data = payload.setdefault("input", {})
-
-    if cfg.GLPI_SET_CALLER_AS_REQUESTER:
-        input_data["_users_id_requester"] = caller_user_id
-        log("GLPI USER", f"Dodaje osobe dzwoniaca jako requester: user_id={caller_user_id}")
-
-    if cfg.GLPI_SET_CALLER_AS_RECIPIENT:
-        input_data["users_id_recipient"] = caller_user_id
-        log("GLPI USER", f"Probuje ustawic osobe dzwoniaca jako recipient/tworca: user_id={caller_user_id}")
-
-    return payload
-
-
 def apply_location_to_payload(payload, location_id, caller_name):
     if not location_id:
         return payload
@@ -1589,7 +1531,7 @@ def get_ticket_caller_label(cdr):
     return first_non_empty(cdr.get("from_dispname"), cdr.get("from_no"), "nieznany")
 
 
-def build_missed_call_payload(cdr, caller_user_id=None, location_id=None):
+def build_missed_call_payload(cdr, location_id=None):
     title = f"Nieodebrane Polaczenie od {get_ticket_caller_label(cdr)}"
 
     content = (
@@ -1617,11 +1559,10 @@ def build_missed_call_payload(cdr, caller_user_id=None, location_id=None):
         }
     }
 
-    payload = apply_caller_to_payload(payload, caller_user_id, cdr.get("from_dispname"))
     return apply_location_to_payload(payload, location_id, cdr.get("from_dispname"))
 
 
-def build_answered_call_payload(cdr, owner_id, caller_user_id=None, location_id=None):
+def build_answered_call_payload(cdr, owner_id, location_id=None):
     title = f"Polaczenie telefoniczne od {get_ticket_caller_label(cdr)}"
 
     content = (
@@ -1650,7 +1591,6 @@ def build_answered_call_payload(cdr, owner_id, caller_user_id=None, location_id=
         }
     }
 
-    payload = apply_caller_to_payload(payload, caller_user_id, cdr.get("from_dispname"))
     return apply_location_to_payload(payload, location_id, cdr.get("from_dispname"))
 
 
@@ -1713,28 +1653,17 @@ def create_glpi_ticket(payload):
     original = {"input": dict(payload.get("input", {}))}
     attempts.append(("pelny payload", original))
 
-    if "users_id_recipient" in original["input"]:
-        no_recipient = {"input": dict(original["input"])}
-        no_recipient["input"].pop("users_id_recipient", None)
-        attempts.append(("bez users_id_recipient", no_recipient))
 
     if "locations_id" in original["input"]:
         no_location = {"input": dict(original["input"])}
         no_location["input"].pop("locations_id", None)
         attempts.append(("bez locations_id", no_location))
 
-    if "_users_id_requester" in original["input"] or "users_id_recipient" in original["input"]:
-        no_caller = {"input": dict(original["input"])}
-        no_caller["input"].pop("users_id_recipient", None)
-        no_caller["input"].pop("_users_id_requester", None)
-        attempts.append(("bez caller user fields", no_caller))
 
-    if "_users_id_requester" in original["input"] or "users_id_recipient" in original["input"] or "locations_id" in original["input"]:
+    if "locations_id" in original["input"]:
         plain = {"input": dict(original["input"])}
-        plain["input"].pop("users_id_recipient", None)
-        plain["input"].pop("_users_id_requester", None)
         plain["input"].pop("locations_id", None)
-        attempts.append(("bez caller i location fields", plain))
+        attempts.append(("bez locations_id plain", plain))
 
     last_error = None
 
@@ -1778,7 +1707,7 @@ def handle_cdr_line(line: str):
         return
 
     is_missed_call = is_missed_call_cdr(cdr)
-    caller_user_id, location_id = resolve_caller_context(cdr)
+    location_id = resolve_ticket_location_id(cdr)
 
     if is_missed_call:
         log("CDR TYPE", f"Nieodebrane. duration={cdr['duration']}, to-no={cdr['to_no']}, final-dn={cdr['final_dn']}, final-dispname={cdr['final_dispname']}, from-dispname={cdr['from_dispname']}")
@@ -1787,11 +1716,11 @@ def handle_cdr_line(line: str):
             log("POMINIETO GLPI", "Nieodebrane polaczenie poza godzinami 08:00-20:00. Nie tworze ticketa i nie zapisuje do bazy.")
             return
 
-        payload = build_missed_call_payload(cdr, caller_user_id, location_id)
+        payload = build_missed_call_payload(cdr, location_id)
 
         try:
             status_code, ticket_id = create_glpi_ticket(payload)
-            log("GLPI SUCCESS", f"Utworzono ticket z nieodebranego polaczenia. Ticket ID: {ticket_id}. HTTP {status_code}. caller_user_id={caller_user_id}. location_id={location_id}")
+            log("GLPI SUCCESS", f"Utworzono ticket z nieodebranego polaczenia. Ticket ID: {ticket_id}. HTTP {status_code}. location_id={location_id}")
 
         except GLPIRequestError as e:
             log("GLPI ERROR", e)
@@ -1816,13 +1745,13 @@ def handle_cdr_line(line: str):
         mark_as_failed(record_id, None, error)
         return
 
-    payload = build_answered_call_payload(cdr, owner_id, caller_user_id, location_id)
+    payload = build_answered_call_payload(cdr, owner_id, location_id)
 
     try:
         status_code, ticket_id = create_glpi_ticket(payload)
-        mark_as_done(record_id, ticket_id, status_code, caller_user_id, location_id)
+        mark_as_done(record_id, ticket_id, status_code, location_id)
 
-        log("GLPI SUCCESS", f"Utworzono ticket z odebranego polaczenia. Ticket ID: {ticket_id}. HTTP {status_code}. owner_id={owner_id}. caller_user_id={caller_user_id}. location_id={location_id}")
+        log("GLPI SUCCESS", f"Utworzono ticket z odebranego polaczenia. Ticket ID: {ticket_id}. HTTP {status_code}. owner_id={owner_id}. location_id={location_id}")
 
     except GLPIRequestError as e:
         error_text = str(e)

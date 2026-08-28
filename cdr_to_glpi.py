@@ -1066,7 +1066,8 @@ def fetch_glpi_users():
                     url,
                     headers=headers,
                     params=params,
-                    timeout=cfg.GLPI_HTTP_TIMEOUT
+                    timeout=cfg.GLPI_HTTP_TIMEOUT,
+                    
                 )
             except requests.exceptions.RequestException as e:
                 raise GLPIRequestError(
@@ -1398,7 +1399,8 @@ def fetch_glpi_locations():
                     url,
                     headers=headers,
                     params=params,
-                    timeout=cfg.GLPI_HTTP_TIMEOUT
+                    timeout=cfg.GLPI_HTTP_TIMEOUT,
+                    
                 )
             except requests.exceptions.RequestException as e:
                 raise GLPIRequestError(
@@ -1647,38 +1649,10 @@ def post_glpi_ticket(payload):
         kill_glpi_session(session_token)
 
 
+
+
 def create_glpi_ticket(payload):
-    attempts = []
-
-    original = {"input": dict(payload.get("input", {}))}
-    attempts.append(("pelny payload", original))
-
-
-    if "locations_id" in original["input"]:
-        no_location = {"input": dict(original["input"])}
-        no_location["input"].pop("locations_id", None)
-        attempts.append(("bez locations_id", no_location))
-
-
-    if "locations_id" in original["input"]:
-        plain = {"input": dict(original["input"])}
-        plain["input"].pop("locations_id", None)
-        attempts.append(("bez locations_id plain", plain))
-
-    last_error = None
-
-    for label, attempt_payload in attempts:
-        try:
-            if label != "pelny payload":
-                log("GLPI RETRY", f"Ponawiam tworzenie ticketu: {label}")
-
-            return post_glpi_ticket(attempt_payload)
-
-        except GLPIRequestError as e:
-            last_error = e
-            log("GLPI ERROR", f"Proba '{label}' nieudana: {e}")
-
-    raise last_error
+    return post_glpi_ticket(payload)
 
 
 # =========================

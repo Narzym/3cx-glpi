@@ -1,23 +1,19 @@
-# 3cxToGLPI Admin Panel v1.16
+# 3cxToGLPI Admin Panel v1.18
 
-Terminalowy panel zarzadzania integracja 3CX -> GLPI.
+Wersja v1.18:
 
-## Zmiany v1.16
+- przywrocono proste przypisywanie ticketow do grupy IT_Helpdesk przez pole `_groups_id_assign`
+- usunieto dodatkowe dopisywanie relacji `Group_Ticket`
+- usunieto opcje/zmiany zwiazane z `GLPI_VERIFY_SSL`
+- brak dodatkowych komunikatow `GLPI GROUP`
 
-- calkowicie usunieto automatyczne ustawianie zglaszajacego/requestera na podstawie osoby dzwoniacej,
-- tickety nie dostaja juz pol `_users_id_requester` ani `users_id_recipient`,
-- lokalizacja po `sala XXX` dalej dziala normalnie,
-- owner/przypisany technik dalej jest ustawiany po `final-dn`, `to-no` albo awaryjnie po `final-dispname`,
-- widok bazy polaczen nie pokazuje juz kolumny requestera.
+Nowe tickety nadal ida do grupy ustawionej w `.env`/configu:
 
-## Uruchomienie
-
-```bash
-cd /opt/3cx-glpi
-python3 admin_panel.py
+```env
+GLPI_HELPDESK_GROUP_ID=27
 ```
 
-## Po aktualizacji przez git
+Po wrzuceniu zmian na serwer:
 
 ```bash
 cd /opt/3cx-glpi
@@ -25,5 +21,3 @@ git pull
 sudo systemctl restart cdr_to_glpi.service
 python3 admin_panel.py
 ```
-
-Restart service jest wymagany, bo zmienil sie listener `cdr_to_glpi.py`.

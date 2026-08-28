@@ -1,23 +1,16 @@
-# 3cxToGLPI Admin Panel v1.18
+# 3cxToGLPI Admin Panel v1.19
 
-Wersja v1.18:
+Zmiana v1.19:
+- grupa IT_Helpdesk id=27 jest dodawana w payloadzie ticketa jako grupa zgłaszająca (`_groups_id_requester`) i grupa przypisana (`_groups_id_assign`).
+- bez dodatkowych requestów Group_Ticket, bez certyfikatowych kombinacji, bez nowych logów specjalnych.
 
-- przywrocono proste przypisywanie ticketow do grupy IT_Helpdesk przez pole `_groups_id_assign`
-- usunieto dodatkowe dopisywanie relacji `Group_Ticket`
-- usunieto opcje/zmiany zwiazane z `GLPI_VERIFY_SSL`
-- brak dodatkowych komunikatow `GLPI GROUP`
+Najważniejsze pliki:
+- `cdr_to_glpi.py`
+- `admin_panel.py`
+- `config.py`
 
-Nowe tickety nadal ida do grupy ustawionej w `.env`/configu:
-
-```env
-GLPI_HELPDESK_GROUP_ID=27
-```
-
-Po wrzuceniu zmian na serwer:
+Po aktualizacji zrestartuj usługę:
 
 ```bash
-cd /opt/3cx-glpi
-git pull
 sudo systemctl restart cdr_to_glpi.service
-python3 admin_panel.py
 ```

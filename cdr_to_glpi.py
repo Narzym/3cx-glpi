@@ -1557,6 +1557,7 @@ def build_missed_call_payload(cdr, location_id=None):
             "impact": 3,
             "priority": 3,
             "itilcategories_id": cfg.GLPI_CATEGORY_ID,
+            "_groups_id_requester": cfg.GLPI_HELPDESK_GROUP_ID,
             "_groups_id_assign": cfg.GLPI_HELPDESK_GROUP_ID
         }
     }
@@ -1588,6 +1589,7 @@ def build_answered_call_payload(cdr, owner_id, location_id=None):
             "impact": 3,
             "priority": 3,
             "itilcategories_id": cfg.GLPI_CATEGORY_ID,
+            "_groups_id_requester": cfg.GLPI_HELPDESK_GROUP_ID,
             "_users_id_assign": owner_id,
             "_groups_id_assign": cfg.GLPI_HELPDESK_GROUP_ID
         }

@@ -108,14 +108,16 @@ GLPI_STATUS_CLOSED = int(os.getenv("GLPI_STATUS_CLOSED", "6"))
 MISSED_CALL_FINAL_DNS = expand_with_prefix(IT_NUMBERS_BASE)
 MISSED_CALL_TO_NUMBERS = MISSED_CALL_FINAL_DNS
 
+# =========================
+# Jeśli FINAL-DN: None, to ticket przypisywany do IT Helpdesk.
 OWNER_BY_FINAL_DN_BASE = {
-    "519": 940,     # Grzegorz SAMSUNG
-    "520": 928,     # Michal IPHONE
+    "519": None,    # Grzegorz SAMSUNG  ID:940
+    "520": None,    # Michal IPHONE  ID:928
     "521": 1043,    # Alexander
-#    "524": 154,    # Zagubiony
+#   "524": None,    # Zagubiony
     "526": 32,      # Mateusz XIAOMI
     "528": 1040,    # Borys
-    "529": 17       # Janek
+    "529": 17       # Janek NOTHING (jeszcze nie podpisany)
 }
 
 OWNER_BY_FINAL_DN = {}

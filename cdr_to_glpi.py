@@ -1537,14 +1537,17 @@ def build_missed_call_payload(cdr, location_id=None):
     title = f"Nieodebrane Polaczenie od {get_ticket_caller_label(cdr)}"
 
     content = (
-        "Automatyczne zgloszenie utworzone na podstawie nieodebranego polaczenia z 3CX.\n\n"
-        f"Call ID: {cdr['callid']}\n"
-        f"duration: {cdr['duration']}\n"
+        "Automatyczne zgloszenie utworzone na podstawie rekordu CDR z 3CX.\n\n"
+
         f"from-no: {cdr['from_no']}\n"
+        f"to-no: {cdr['to_no']}\n\n"
+
         f"from-dispname: {cdr['from_dispname']}\n"
-        f"to-no: {cdr['to_no']}\n"
+        f"final-dispname: {cdr['final_dispname']}\n\n"
+
+        f"duration: {cdr['duration']}\n"
         f"final-dn: {cdr['final_dn']}\n"
-        f"final-dispname: {cdr['final_dispname']}\n"
+        f"Call ID: {cdr['callid']}\n"  
     )
 
     payload = {
@@ -1570,13 +1573,16 @@ def build_answered_call_payload(cdr, owner_id, location_id=None):
 
     content = (
         "Automatyczne zgloszenie utworzone na podstawie rekordu CDR z 3CX.\n\n"
-        f"Call ID: {cdr['callid']}\n"
-        f"duration: {cdr['duration']}\n"
+
         f"from-no: {cdr['from_no']}\n"
+        f"to-no: {cdr['to_no']}\n\n"
+
         f"from-dispname: {cdr['from_dispname']}\n"
-        f"to-no: {cdr['to_no']}\n"
+        f"final-dispname: {cdr['final_dispname']}\n\n"
+
+        f"duration: {cdr['duration']}\n"
         f"final-dn: {cdr['final_dn']}\n"
-        f"final-dispname: {cdr['final_dispname']}\n"
+        f"Call ID: {cdr['callid']}\n"  
     )
 
     payload = {
@@ -1584,16 +1590,22 @@ def build_answered_call_payload(cdr, owner_id, location_id=None):
             "name": title,
             "content": content,
             "type": 1,
-            "status": cfg.GLPI_STATUS_CLOSED,
+            "status": cfg.GLPI_STATUS_NEW, #Jest NEW, żeby technik odpowiedzialny mógł go sobie przypisać.
+            "_disablenotif": True,
             "urgency": 3,
             "impact": 3,
             "priority": 3,
             "itilcategories_id": cfg.GLPI_CATEGORY_ID,
             "_groups_id_requester": cfg.GLPI_HELPDESK_GROUP_ID,
-            "_users_id_assign": owner_id,
             "_groups_id_assign": cfg.GLPI_HELPDESK_GROUP_ID
         }
     }
+
+    #Przypisz technika tylko wtedy, gdy jest zdefiniowany
+    #Ustaw status na CLOSED tylko wtedy, gdy wykryło technika (owner_id)
+    if owner_id:
+        payload["input"]["_users_id_assign"] = owner_id
+        payload["input"]["status"] = cfg.GLPI_STATUS_CLOSED
 
     return apply_location_to_payload(payload, location_id, cdr.get("from_dispname"))
 
@@ -1715,11 +1727,6 @@ def handle_cdr_line(line: str):
 
     owner_id = resolve_owner_id(cdr)
 
-    if not owner_id:
-        error = f"Brak przypisanego ownera dla final-dn='{cdr['final_dn']}', to-no='{cdr['to_no']}', final-dispname='{cdr['final_dispname']}'"
-        log("POMINIETO GLPI", error)
-        mark_as_failed(record_id, None, error)
-        return
 
     payload = build_answered_call_payload(cdr, owner_id, location_id)
 

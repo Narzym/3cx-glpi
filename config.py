@@ -35,7 +35,7 @@ RECONNECT_DELAY = int(os.getenv("RECONNECT_DELAY", "5"))
 
 IT_NUMBER_PREFIX = os.getenv("IT_NUMBER_PREFIX", "225435")
 
-IT_NUMBERS_BASE = {"517", "699", "717", "519", "524", "526", "528", "529"}
+IT_NUMBERS_BASE = {"517", "519", "520", "521", "524", "526", "528", "529", "699", "717"}
 
 
 def expand_with_prefix(numbers, prefix=IT_NUMBER_PREFIX):
@@ -63,9 +63,9 @@ IT_NUMBERS = expand_with_prefix(IT_NUMBERS_BASE)
 # =========================
 
 TCP_KEEPALIVE_IDLE = int(os.getenv("TCP_KEEPALIVE_IDLE", "60"))
-TCP_KEEPALIVE_INTERVAL = int(os.getenv("TCP_KEEPALIVE_INTERVAL", "10"))
 TCP_KEEPALIVE_COUNT = int(os.getenv("TCP_KEEPALIVE_COUNT", "3"))
 TCP_USER_TIMEOUT_MS = int(os.getenv("TCP_USER_TIMEOUT_MS", "30000"))
+TCP_KEEPALIVE_INTERVAL = int(os.getenv("TCP_KEEPALIVE_INTERVAL", "10"))
 
 # =========================
 # KONFIGURACJA CZASU
@@ -109,11 +109,13 @@ MISSED_CALL_FINAL_DNS = expand_with_prefix(IT_NUMBERS_BASE)
 MISSED_CALL_TO_NUMBERS = MISSED_CALL_FINAL_DNS
 
 OWNER_BY_FINAL_DN_BASE = {
-    "519": 193,     # Grzegorz
-    "524": 172,     # Mateusz
-    "526": 154,     # Wojciech
-    "528": 213,     # Michal
-    "529": 187      # Jan
+    "519": 940,     # Grzegorz SAMSUNG
+    "520": 928,     # Michal IPHONE
+    "521": 1043,    # Alexander
+#    "524": 154,    # Zagubiony
+    "526": 32,      # Mateusz XIAOMI
+    "528": 1040,    # Borys
+    "529": 17       # Janek
 }
 
 OWNER_BY_FINAL_DN = {}

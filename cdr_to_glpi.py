@@ -1539,14 +1539,14 @@ def build_missed_call_payload(cdr, location_id=None):
     content = (
         "Automatyczne zgloszenie utworzone na podstawie rekordu CDR z 3CX.\n\n"
 
-        f"from-no: {cdr['from_no']}\n"
-        f"to-no: {cdr['to_no']}\n\n"
+        f"From: {cdr['from_no']}\n"
+        f"From: {cdr['from_dispname']}\n\n"
 
-        f"from-dispname: {cdr['from_dispname']}\n"
-        f"final-dispname: {cdr['final_dispname']}\n\n"
+        f"Final: {cdr['final_dispname']}\n"
+        f"Final: {cdr['final_dn']}\n\n"
 
-        f"duration: {cdr['duration']}\n"
-        f"final-dn: {cdr['final_dn']}\n"
+        f"Target: {cdr['to_no']}\n"
+        f"Duration: {cdr['duration']}\n"
         f"Call ID: {cdr['callid']}\n"  
     )
 
@@ -1574,14 +1574,14 @@ def build_answered_call_payload(cdr, owner_id, location_id=None):
     content = (
         "Automatyczne zgloszenie utworzone na podstawie rekordu CDR z 3CX.\n\n"
 
-        f"from-no: {cdr['from_no']}\n"
-        f"to-no: {cdr['to_no']}\n\n"
+        f"From: {cdr['from_no']}\n"
+        f"From: {cdr['from_dispname']}\n\n"
 
-        f"from-dispname: {cdr['from_dispname']}\n"
-        f"final-dispname: {cdr['final_dispname']}\n\n"
+        f"Final: {cdr['final_dispname']}\n"
+        f"Final: {cdr['final_dn']}\n\n"
 
-        f"duration: {cdr['duration']}\n"
-        f"final-dn: {cdr['final_dn']}\n"
+        f"Target: {cdr['to_no']}\n"
+        f"Duration: {cdr['duration']}\n"
         f"Call ID: {cdr['callid']}\n"  
     )
 

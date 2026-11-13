@@ -157,10 +157,12 @@ def is_zero_duration(duration):
 
 
 def is_missed_call_cdr(cdr):
-""" Nieodebrane rozpoznajemy po:
-    1. final-dn (lub awaryjnie to-no) jest jednym z numerow IT
+    """
+    Nieodebrane rozpoznajemy po:
+    1. final-dn (lub awaryjnie to-no) jest jednym z naszych numerow IT
     2. duration = 0
-    3. rozmowca rozlaczyl sie bedac w kolejce (duration > 0)"""
+    3. lub polaczenie zakonczylo sie bezposrednio na numerze kolejki (517)
+    """
 
     final_dn = str(cdr.get("final_dn") or "").strip()
     to_no = str(cdr.get("to_no") or "").strip()

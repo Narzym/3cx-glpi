@@ -157,20 +157,26 @@ def is_zero_duration(duration):
 
 
 def is_missed_call_cdr(cdr):
-    """
-    Nieodebrane rozpoznajemy po:
-    1. final-dn jest jednym z naszych numerow IT, np. 517 albo 225435517
+""" Nieodebrane rozpoznajemy po:
+    1. final-dn (lub awaryjnie to-no) jest jednym z numerow IT
     2. duration = 0
+    3. rozmowca rozlaczyl sie bedac w kolejce (duration > 0)"""
 
-    Awaryjnie, jesli final-dn bedzie puste, sprawdzamy tez to-no.
-    """
-
-    final_dn = cdr.get("final_dn")
-    to_no = cdr.get("to_no")
+    final_dn = str(cdr.get("final_dn") or "").strip()
+    to_no = str(cdr.get("to_no") or "").strip()
 
     target_number = final_dn or to_no
 
-    return target_number in cfg.MISSED_CALL_FINAL_DNS and is_zero_duration(cdr["duration"])
+    if target_number not in cfg.MISSED_CALL_FINAL_DNS:
+        return False
+
+    if is_zero_duration(cdr.get("duration")):
+        return True
+
+    if final_dn in ("517", "225435517"):
+        return True
+
+    return False
 
 
 def get_connection_duration(start_time):

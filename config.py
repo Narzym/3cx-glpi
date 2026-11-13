@@ -112,12 +112,12 @@ MISSED_CALL_TO_NUMBERS = MISSED_CALL_FINAL_DNS
 # Jeśli FINAL-DN: None -> ticket bez realizatora
 OWNER_BY_FINAL_DN_BASE = {
     "519": None,    # SAMSUNG 
-    "520": None,    # IPHONE 
+    "520": None,    # NOKIA
     "521": 1043,    # Alexander
 #   "524": None,    # Zagubiony
     "526": 32,      # Mateusz XIAOMI
     "528": 1040,    # Borys
-    "529": 17       # Janek NOTHING (jeszcze nie podpisany)
+    "529": 17       # Janek HUAWEI
 }
 
 ''' GLPI USER ID '''

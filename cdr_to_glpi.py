@@ -151,7 +151,7 @@ def is_zero_duration(duration):
     seconds = duration_to_seconds(duration)
 
     if seconds is None:
-        return False
+        return True
 
     return seconds == 0
 
@@ -161,7 +161,7 @@ def is_missed_call_cdr(cdr):
     Nieodebrane rozpoznajemy po:
     1. final-dn (lub awaryjnie to-no) jest jednym z naszych numerow IT
     2. duration = 0
-    3. lub polaczenie zakonczylo sie bezposrednio na numerze kolejki (517)
+    3. lub polaczenie zakonczylo sie bezposrednio na numerze kolejki (517 lub 699) #699 to kolejka z sal wykładowych
     """
 
     final_dn = str(cdr.get("final_dn") or "").strip()
@@ -175,7 +175,7 @@ def is_missed_call_cdr(cdr):
     if is_zero_duration(cdr.get("duration")):
         return True
 
-    if final_dn in ("517", "225435517"):
+    if final_dn in ("517", "225435517", "699", "225435699"):
         return True
 
     return False
@@ -1543,19 +1543,20 @@ def get_ticket_caller_label(cdr):
 
 def build_missed_call_payload(cdr, location_id=None):
     title = f"Nieodebrane Polaczenie od {get_ticket_caller_label(cdr)}"
+    
+    # Pobieramy numer końcowy i doklejamy imię technika/urządzenia z configu
+    final_dn = str(cdr.get("final_dn") or "").strip()
+    phone_name = cfg.PHONE_NAME_BY_FINAL_DN.get(final_dn)
+    final_label = f"{final_dn} ({phone_name})" if phone_name else final_dn
 
     content = (
         "Automatyczne zgloszenie utworzone na podstawie rekordu CDR z 3CX.\n\n"
 
         f"From: {cdr['from_no']}\n"
-        f"From: {cdr['from_dispname']}\n\n"
-
-        f"Final: {cdr['final_dispname']}\n"
-        f"Final: {cdr['final_dn']}\n\n"
+        f"Final: {final_label}\n\n"
 
         f"Target: {cdr['to_no']}\n"
-        f"Duration: {cdr['duration']}\n"
-        f"Call ID: {cdr['callid']}\n"  
+        f"Duration: {cdr['duration']}"
     )
 
     payload = {
@@ -1579,18 +1580,20 @@ def build_missed_call_payload(cdr, location_id=None):
 def build_answered_call_payload(cdr, owner_id, location_id=None):
     title = f"Polaczenie telefoniczne od {get_ticket_caller_label(cdr)}"
 
+    # Pobieramy numer końcowy i doklejamy imię technika/urządzenia z configu
+    final_dn = str(cdr.get("final_dn") or "").strip()
+    phone_name = cfg.PHONE_NAME_BY_FINAL_DN.get(final_dn)
+    final_label = f"{final_dn} ({phone_name})" if phone_name else final_dn
+
     content = (
         "Automatyczne zgloszenie utworzone na podstawie rekordu CDR z 3CX.\n\n"
 
         f"From: {cdr['from_no']}\n"
-        f"From: {cdr['from_dispname']}\n\n"
 
-        f"Final: {cdr['final_dispname']}\n"
-        f"Final: {cdr['final_dn']}\n\n"
+        f"Final: {final_label}\n"
 
         f"Target: {cdr['to_no']}\n"
         f"Duration: {cdr['duration']}\n"
-        f"Call ID: {cdr['callid']}\n"  
     )
 
     payload = {

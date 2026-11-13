@@ -109,15 +109,28 @@ MISSED_CALL_FINAL_DNS = expand_with_prefix(IT_NUMBERS_BASE)
 MISSED_CALL_TO_NUMBERS = MISSED_CALL_FINAL_DNS
 
 # =========================
-# Jeśli FINAL-DN: None -> ticket bez realizatora
+# Jeśli FINAL-DN: None -> ticket bez realizatora (lub numer kolejkowy)
 OWNER_BY_FINAL_DN_BASE = {
-    "519": None,    # SAMSUNG 
+    "517": None,    # Kolejka IT
+    "519": None,    # SAMSUNG
     "520": None,    # NOKIA
-    "521": 1043,    # Alexander
+    "521": 1043,    # Alexander SONY ERICSSON
 #   "524": None,    # Zagubiony
     "526": 32,      # Mateusz XIAOMI
-    "528": 1040,    # Borys
+    "528": 1040,    # Borys IPHONE
     "529": 17       # Janek HUAWEI
+    "699": None,    # Kolejka z sal wykładowych
+}
+PHONE_NAME_BY_FINAL_DN_BASE = {
+    "517": "Kolejka IT",
+    "519": "SAMSUNG",
+    "520": "NOKIA",
+    "521": "SONY ERICSSON",
+#   "524": "NOTHING", # Zagubiony
+    "526": "XIAOMI",
+    "528": "IPHONE 18 PRO MAX 10TB",
+    "529": "HUAWEI",
+    "699": "Kolejka z sal wykładowych"
 }
 
 ''' GLPI USER ID '''
@@ -129,6 +142,14 @@ OWNER_BY_FINAL_DN_BASE = {
 # Janek ID: 17
 # Dominik ID: 959
 # Julian ID: 1037
+
+
+# Automatyczne rozszerzenie o pełne numery z prefiksem (np. 225435521)
+PHONE_NAME_BY_FINAL_DN = {}
+for number, phone_name in PHONE_NAME_BY_FINAL_DN_BASE.items():
+    PHONE_NAME_BY_FINAL_DN[number] = phone_name
+    if IT_NUMBER_PREFIX and not number.startswith(IT_NUMBER_PREFIX):
+        PHONE_NAME_BY_FINAL_DN[IT_NUMBER_PREFIX + number] = phone_name
 
 
 OWNER_BY_FINAL_DN = {}

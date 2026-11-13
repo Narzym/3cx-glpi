@@ -118,7 +118,7 @@ OWNER_BY_FINAL_DN_BASE = {
 #   "524": None,    # Zagubiony
     "526": 32,      # Mateusz XIAOMI
     "528": 1040,    # Borys IPHONE
-    "529": 17       # Janek HUAWEI
+    "529": 17,       # Janek HUAWEI
     "699": None,    # Kolejka z sal wykładowych
 }
 PHONE_NAME_BY_FINAL_DN_BASE = {

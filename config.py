@@ -110,6 +110,8 @@ MISSED_CALL_TO_NUMBERS = MISSED_CALL_FINAL_DNS
 
 # =========================
 # Jeśli FINAL-DN: None -> ticket bez realizatora (lub numer kolejkowy)
+
+""" #Ustawienie Tygodniowe
 OWNER_BY_FINAL_DN_BASE = {
     "517": None,    # Kolejka IT
     "519": None,    # SAMSUNG
@@ -121,6 +123,22 @@ OWNER_BY_FINAL_DN_BASE = {
     "529": 17,      # Janek HUAWEI
     "699": None,    # Kolejka z sal wykładowych
 }
+"""
+
+
+# Ustawienie Weekendowe
+OWNER_BY_FINAL_DN_BASE = {
+    "517": None,    # Kolejka IT
+    "519": None,    # SAMSUNG
+    "520": 1037,    # Julian NOKIA
+    "521": 940,     # Grzesiu SONY ERICSSON
+#   "524": None,    # Zagubiony
+    "526": None,    # XIAOMI
+    "528": 959,     # Dominik IPHONE
+    "529": None,    # HUAWEI
+    "699": None,    # Kolejka z sal wykładowych
+}
+
 PHONE_NAME_BY_FINAL_DN_BASE = {
     "517": "Kolejka IT",
     "519": "SAMSUNG",

@@ -461,6 +461,15 @@ def refresh_glpi_locations(screen):
     run_action_and_show(screen, "Update bazy lokalizacji GLPI", core.refresh_glpi_locations_cache)
 
 
+def refresh_glpi_phones(screen):
+    run_action_and_show(screen, "Update przypisan telefonow GLPI", core.refresh_glpi_phones_cache)
+
+
+def reset_glpi_phones_db(screen):
+    if confirm(screen, "Na pewno wyzerowac cache telefonow GLPI? Przypisania pobiora sie ponownie przy najblizszym polaczeniu."):
+        run_action_and_show(screen, "Wyzeruj cache telefonow GLPI", core.reset_glpi_phones)
+
+
 def show_db_stats(screen):
     stats = core.get_db_stats()
     text = (
@@ -469,6 +478,7 @@ def show_db_stats(screen):
         f"Limit CDR: {stats['cdr_max_records']}\n"
         f"Userzy GLPI w cache: {stats['glpi_users_count']}\n"
         f"Lokalizacje GLPI w cache: {stats['glpi_locations_count']}\n"
+        f"Telefony GLPI w cache: {stats['glpi_phones_count']}\n"
     )
     show_text(screen, "Statystyki bazy", text)
 
@@ -584,6 +594,21 @@ def show_glpi_user_records(screen):
 def show_glpi_location_records(screen):
     query = "SELECT glpi_location_id, room_number, name, full_path FROM glpi_locations ORDER BY room_number, glpi_location_id"
     show_text(screen, "Rekordy bazy lokalizacji GLPI", query_sqlite(query))
+
+
+def show_glpi_phone_records(screen):
+    query = '''
+        SELECT
+            p.dn,
+            p.phone_name,
+            p.glpi_user_id AS user_id,
+            COALESCE(u.full_name, '') AS user_name,
+            p.updated_at
+        FROM glpi_phones p
+        LEFT JOIN glpi_users u ON u.glpi_user_id = p.glpi_user_id
+        ORDER BY p.dn
+    '''
+    show_text(screen, "Przypisania telefonow GLPI (cache)", query_sqlite(query))
 
 
 def show_logs(screen):
@@ -832,6 +857,10 @@ def main_menu_items():
             "handler": lambda screen: menu_loop(screen, "Opcje bazy lokalizacji GLPI", glpi_locations_menu_items)
         },
         {
+            "label": "Telefony GLPI (przypisania do technikow)",
+            "handler": lambda screen: menu_loop(screen, "Telefony GLPI", glpi_phones_menu_items)
+        },
+        {
             "label": "Opcje logow",
             "handler": lambda screen: menu_loop(screen, "Opcje logow", log_options_menu_items)
         },
@@ -922,6 +951,27 @@ def glpi_locations_menu_items():
         {
             "label": "Wyzeruj baze lokalizacji GLPI",
             "handler": reset_glpi_locations_db
+        },
+        {
+            "label": "Wstecz",
+            "handler": lambda screen: "BACK"
+        }
+    ]
+
+
+def glpi_phones_menu_items():
+    return [
+        {
+            "label": "Pokaz przypisania (cache)",
+            "handler": show_glpi_phone_records
+        },
+        {
+            "label": "Odswiez teraz z GLPI",
+            "handler": refresh_glpi_phones
+        },
+        {
+            "label": "Wyzeruj cache telefonow",
+            "handler": reset_glpi_phones_db
         },
         {
             "label": "Wstecz",

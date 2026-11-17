@@ -85,6 +85,12 @@ GLPI_USER_TOKEN = os.getenv("GLPI_USER_TOKEN")
 GLPI_HTTP_TIMEOUT = int(os.getenv("GLPI_HTTP_TIMEOUT", "15"))
 GLPI_USER_PAGE_SIZE = int(os.getenv("GLPI_USER_PAGE_SIZE", "200"))
 GLPI_LOCATION_PAGE_SIZE = int(os.getenv("GLPI_LOCATION_PAGE_SIZE", "200"))
+GLPI_PHONE_PAGE_SIZE = int(os.getenv("GLPI_PHONE_PAGE_SIZE", "200"))
+
+# Jak dlugo (s) trzymamy przypisania telefonow z GLPI (Zasoby -> Telefony) w cache SQLite.
+# Zmiana uzytkownika przy telefonie w GLPI zadziala najpozniej po tylu sekundach.
+# 0 = pytaj GLPI przy kazdym polaczeniu.
+GLPI_PHONES_CACHE_TTL = int(os.getenv("GLPI_PHONES_CACHE_TTL", "30"))
 
 
 GLPI_SET_ROOM_AS_LOCATION = os.getenv("GLPI_SET_ROOM_AS_LOCATION", "1") == "1"

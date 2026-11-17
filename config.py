@@ -123,7 +123,7 @@ OWNER_BY_FINAL_DN_BASE = {
     "529": 17,      # Janek HUAWEI
     "699": None,    # Kolejka z sal wykładowych
 }
-
+"""
 #Ustawienie Tygodniowe ++
 OWNER_BY_FINAL_DN_BASE = {
     "517": None,    # Kolejka IT
@@ -136,7 +136,7 @@ OWNER_BY_FINAL_DN_BASE = {
     "529": 17,      # Janek HUAWEI
     "699": None,    # Kolejka z sal wykładowych
 }
-
+"""
 
 # Ustawienie Weekendowe
 """

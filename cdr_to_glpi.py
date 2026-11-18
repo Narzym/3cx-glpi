@@ -1589,11 +1589,10 @@ def build_answered_call_payload(cdr, owner_id, location_id=None):
         "Automatyczne zgloszenie utworzone na podstawie rekordu CDR z 3CX.\n\n"
 
         f"From: {cdr['from_no']}\n"
-
-        f"Final: {final_label}\n"
+        f"Final: {final_label}\n\n"
 
         f"Target: {cdr['to_no']}\n"
-        f"Duration: {cdr['duration']}\n"
+        f"Duration: {cdr['duration']}"
     )
 
     payload = {

@@ -122,42 +122,13 @@ OWNER_BY_FINAL_DN_BASE = {
     "517": None,    # Kolejka IT
     "519": None,    # SAMSUNG
     "520": None,    # NOKIA
-    "521": 1043,    # Alexander SONY ERICSSON
-#   "524": None,    # Zagubiony
-    "526": 32,      # Mateusz XIAOMI
-    "528": 1040,    # Borys IPHONE
-    "529": 17,      # Janek HUAWEI
-    "699": None,    # Kolejka z sal wykładowych
-}
-"""
-#Ustawienie Tygodniowe ++
-OWNER_BY_FINAL_DN_BASE = {
-    "517": None,    # Kolejka IT
-    "519": 959,    # SAMSUNG Dominik
-    "520": 940,    # NOKIA Grzesiu
-    "521": 1043,    # Alexander SONY ERICSSON
-#   "524": None,    # Zagubiony
-    "526": 32,      # Mateusz XIAOMI
-    "528": 1040,    # Borys IPHONE
-    "529": 17,      # Janek HUAWEI
-    "699": None,    # Kolejka z sal wykładowych
-}
-"""
-
-# Ustawienie Weekendowe
-"""
-OWNER_BY_FINAL_DN_BASE = {
-    "517": None,    # Kolejka IT
-    "519": None,    # SAMSUNG
-    "520": 1037,    # Julian NOKIA
-    "521": 940,     # Grzesiu SONY ERICSSON
+    "521": None,    # SONY ERICSSON
 #   "524": None,    # Zagubiony
     "526": None,    # XIAOMI
-    "528": 959,     # Dominik IPHONE
+    "528": None,    # IPHONE
     "529": None,    # HUAWEI
     "699": None,    # Kolejka z sal wykładowych
 }
-"""
 
 PHONE_NAME_BY_FINAL_DN_BASE = {
     "517": "Kolejka IT",

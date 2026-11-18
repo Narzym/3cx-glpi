@@ -85,6 +85,12 @@ GLPI_USER_TOKEN = os.getenv("GLPI_USER_TOKEN")
 GLPI_HTTP_TIMEOUT = int(os.getenv("GLPI_HTTP_TIMEOUT", "15"))
 GLPI_USER_PAGE_SIZE = int(os.getenv("GLPI_USER_PAGE_SIZE", "200"))
 GLPI_LOCATION_PAGE_SIZE = int(os.getenv("GLPI_LOCATION_PAGE_SIZE", "200"))
+GLPI_PHONE_PAGE_SIZE = int(os.getenv("GLPI_PHONE_PAGE_SIZE", "200"))
+
+# Jak dlugo (s) trzymamy przypisania telefonow z GLPI (Zasoby -> Telefony) w cache SQLite.
+# Zmiana uzytkownika przy telefonie w GLPI zadziala najpozniej po tylu sekundach.
+# 0 = pytaj GLPI przy kazdym polaczeniu.
+GLPI_PHONES_CACHE_TTL = int(os.getenv("GLPI_PHONES_CACHE_TTL", "30"))
 
 
 GLPI_SET_ROOM_AS_LOCATION = os.getenv("GLPI_SET_ROOM_AS_LOCATION", "1") == "1"
@@ -110,17 +116,20 @@ MISSED_CALL_TO_NUMBERS = MISSED_CALL_FINAL_DNS
 
 # =========================
 # Jeśli FINAL-DN: None -> ticket bez realizatora (lub numer kolejkowy)
+
+#Ustawienie Tygodniowe
 OWNER_BY_FINAL_DN_BASE = {
     "517": None,    # Kolejka IT
     "519": None,    # SAMSUNG
     "520": None,    # NOKIA
-    "521": 1043,    # Alexander SONY ERICSSON
+    "521": None,    # SONY ERICSSON
 #   "524": None,    # Zagubiony
-    "526": 32,      # Mateusz XIAOMI
-    "528": 1040,    # Borys IPHONE
-    "529": 17,       # Janek HUAWEI
+    "526": None,    # XIAOMI
+    "528": None,    # IPHONE
+    "529": None,    # HUAWEI
     "699": None,    # Kolejka z sal wykładowych
 }
+
 PHONE_NAME_BY_FINAL_DN_BASE = {
     "517": "Kolejka IT",
     "519": "SAMSUNG",

@@ -18,6 +18,10 @@ import config as cfg
 # przy kazdym polaczeniu. Panel nadal moze sprobowac update po poprawie uprawnien.
 GLPI_LOCATION_FETCH_FORBIDDEN_RUNTIME = False
 
+# Po nieudanym odswiezeniu telefonow nie probujemy ponownie przed tym czasem (time.time()),
+# zeby niedostepne GLPI nie blokowalo kazdego kolejnego polaczenia.
+GLPI_PHONES_RETRY_AFTER = 0.0
+
 
 # =========================
 # POMOCNICZE
@@ -106,7 +110,8 @@ def build_glpi_right_missing_message(itemtype, response):
         f"GLPI {itemtype} fetch error. HTTP 403 Forbidden. "
         f"API user/token nie ma prawa odczytu do itemtype '{itemtype}'. "
         "To nie wyglada na zly endpoint, tylko na brak uprawnien profilu uzytkownika API. "
-        "W GLPI nadaj profilowi tego usera prawo Odczyt/Read do Lokalizacji/List rozwijanych, "
+        "W GLPI nadaj profilowi tego usera prawo Odczyt/Read do tego typu zasobu "
+        "(Telefony: Administracja -> Profile -> Zasoby; Lokalizacje: Listy rozwijane), "
         "albo uzyj tokena usera z takim prawem. "
         f"Body: {get_response_text(response)}"
     )
@@ -310,6 +315,18 @@ def create_glpi_locations_table(cursor):
     ''')
 
 
+def create_glpi_phones_table(cursor):
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS glpi_phones (
+            glpi_phone_id INTEGER PRIMARY KEY,
+            dn TEXT NOT NULL,
+            phone_name TEXT,
+            glpi_user_id INTEGER,
+            updated_at TEXT
+        )
+    ''')
+
+
 def get_table_columns(cursor, table_name):
     try:
         cursor.execute(f"PRAGMA table_info({table_name})")
@@ -411,6 +428,7 @@ def init_db():
     create_glpi_users_table(cursor)
     ensure_glpi_users_schema(cursor)
     create_glpi_locations_table(cursor)
+    create_glpi_phones_table(cursor)
 
     default_limit = normalize_cdr_limit_value(cfg.CDR_MAX_RECORDS_DEFAULT)
     cursor.execute('''
@@ -586,6 +604,18 @@ def reset_glpi_locations():
     conn.close()
 
 
+def reset_glpi_phones():
+    conn = db_connect()
+    cursor = conn.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS glpi_phones")
+    create_glpi_phones_table(cursor)
+    cursor.execute("DELETE FROM settings WHERE key = 'glpi_phones_last_sync'")
+
+    conn.commit()
+    conn.close()
+
+
 def save_it_cdr(cdr: dict):
     conn = db_connect()
     cursor = conn.cursor()
@@ -690,12 +720,19 @@ def get_db_stats():
     except sqlite3.Error:
         glpi_locations_count = "schema?"
 
+    try:
+        cursor.execute("SELECT COUNT(*) FROM glpi_phones")
+        glpi_phones_count = cursor.fetchone()[0]
+    except sqlite3.Error:
+        glpi_phones_count = "schema?"
+
     conn.close()
 
     return {
         "cdr_count": cdr_count,
         "glpi_users_count": glpi_users_count,
         "glpi_locations_count": glpi_locations_count,
+        "glpi_phones_count": glpi_phones_count,
         "cdr_max_records": get_cdr_max_records_label()
     }
 
@@ -1174,6 +1211,22 @@ def resolve_owner_id(cdr):
     final_dn = cdr.get("final_dn")
     to_no = cdr.get("to_no")
 
+    # 1. Priorytet: GLPI -> Zasoby -> Telefony (pole "Uzytkownik" = kto ma aparat teraz).
+    # Jesli aparat jest w GLPI, to GLPI rozstrzyga - rowniez gdy nikt go nie ma (wtedy ticket bez realizatora).
+    phone_entry = get_glpi_phone_by_dn(final_dn or to_no)
+
+    if phone_entry is not None:
+        glpi_user_id = phone_entry.get("glpi_user_id")
+        phone_name = phone_entry.get("phone_name") or ""
+
+        if glpi_user_id:
+            log("GLPI OWNER", f"Owner z zasobow GLPI: '{phone_entry['dn']}' ({phone_name}) -> GLPI user id={glpi_user_id}")
+            return glpi_user_id
+
+        log("GLPI OWNER", f"Telefon '{phone_entry['dn']}' ({phone_name}) nie ma w GLPI przypisanego uzytkownika. Ticket pojdzie bez realizatora.")
+        return None
+
+    # 2. Fallback z config.py (kolejki 517/699, telefon spoza GLPI albo cache pusty i GLPI niedostepne)
     owner_id = cfg.OWNER_BY_FINAL_DN.get(final_dn)
 
     if owner_id:
@@ -1524,6 +1577,294 @@ def resolve_location_id_by_room(room_number):
 
 
 # =========================
+# GLPI PHONES CACHE (Zasoby -> Telefony)
+# =========================
+
+def normalize_phone_dn(value):
+    dn = str(value or "").strip()
+    prefix = cfg.IT_NUMBER_PREFIX
+
+    if prefix and dn.startswith(prefix) and len(dn) > len(prefix):
+        dn = dn[len(prefix):]
+
+    return dn
+
+
+def extract_dn_from_glpi_phone(phone):
+    """
+    Numer wewnetrzny 3CX bierzemy kolejno z: Numer inwentarzowy (otherserial),
+    Numer seryjny (serial) i poczatku nazwy (np. "519 SAMSUNG").
+    Przyjmujemy WYLACZNIE numery z IT_NUMBERS_BASE, zeby inny sprzet z GLPI
+    (np. z przypadkowo takim samym numerem inwentarzowym) nie podszyl sie pod aparat IT.
+    """
+
+    candidates = [phone.get("otherserial"), phone.get("serial")]
+
+    name_match = re.match(r"^\s*(\d{3,12})\b", str(phone.get("name") or ""))
+
+    if name_match:
+        candidates.append(name_match.group(1))
+
+    for candidate in candidates:
+        dn = normalize_phone_dn(candidate)
+
+        if dn in cfg.IT_NUMBERS_BASE:
+            return dn
+
+    return ""
+
+
+def clean_glpi_phone_label(raw_name, dn):
+    # "519 SAMSUNG" -> "SAMSUNG", zeby w tickecie nie bylo "519 (519 SAMSUNG)".
+    name = str(raw_name or "").strip()
+    prefix = re.escape(cfg.IT_NUMBER_PREFIX or "")
+
+    return re.sub(rf"^(?:{prefix})?{re.escape(dn)}\s*[-:|]?\s*", "", name).strip()
+
+
+def replace_glpi_phones_cache(phones):
+    """
+    Podmienia cache telefonow w jednej transakcji (bez DROP TABLE), wiec rownolegly odczyt
+    nigdy nie zobaczy pustej tabeli, a blad w polowie nie zostawi po sobie zepsutego cache.
+    Zwraca liczbe zapisanych telefonow.
+    """
+
+    by_dn = {}
+
+    for phone in phones:
+        if not isinstance(phone, dict):
+            continue
+
+        if phone.get("is_deleted") or phone.get("is_template"):
+            continue
+
+        try:
+            glpi_phone_id = int(phone.get("id"))
+        except (TypeError, ValueError):
+            continue
+
+        dn = extract_dn_from_glpi_phone(phone)
+
+        if not dn:
+            continue
+
+        try:
+            glpi_user_id = int(phone.get("users_id") or 0)
+        except (TypeError, ValueError):
+            glpi_user_id = 0
+
+        entry = (
+            glpi_phone_id,
+            dn,
+            clean_glpi_phone_label(phone.get("name"), dn),
+            glpi_user_id if glpi_user_id > 0 else None
+        )
+
+        if dn in by_dn:
+            kept = max(by_dn[dn][0], glpi_phone_id)
+            log("GLPI PHONE", f"UWAGA: numer {dn} jest w GLPI w kilku telefonach (id={by_dn[dn][0]} i id={glpi_phone_id}). Uzywam id={kept}. Usun duplikat w GLPI.")
+
+            if glpi_phone_id < by_dn[dn][0]:
+                continue
+
+        by_dn[dn] = entry
+
+    if not by_dn:
+        log("GLPI PHONE", "GLPI nie zwrocilo zadnego telefonu z numerem IT (otherserial/serial/nazwa z IT_NUMBERS_BASE). Zostawiam poprzedni cache.")
+        return 0
+
+    now_str = get_now_string()
+    conn = db_connect()
+    cursor = conn.cursor()
+
+    try:
+        create_glpi_phones_table(cursor)
+        cursor.execute("DELETE FROM glpi_phones")
+        cursor.executemany('''
+            INSERT INTO glpi_phones (glpi_phone_id, dn, phone_name, glpi_user_id, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+        ''', [entry + (now_str,) for entry in by_dn.values()])
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    return len(by_dn)
+
+
+def fetch_glpi_phones():
+    session_token = None
+
+    try:
+        session_token = get_glpi_session_token()
+        phones = []
+        start = 0
+        page_size = cfg.GLPI_PHONE_PAGE_SIZE
+
+        while True:
+            end = start + page_size - 1
+            url = glpi_url("Phone")
+
+            headers = {
+                "Content-Type": "application/json",
+                "App-Token": cfg.GLPI_APP_TOKEN,
+                "Session-Token": session_token,
+                "Range": f"{start}-{end}"
+            }
+
+            params = {
+                "range": f"{start}-{end}",
+                "is_deleted": "0"
+            }
+
+            try:
+                response = requests.get(
+                    url,
+                    headers=headers,
+                    params=params,
+                    timeout=cfg.GLPI_HTTP_TIMEOUT
+                )
+            except requests.exceptions.RequestException as e:
+                raise GLPIRequestError(
+                    f"Blad polaczenia przy pobieraniu telefonow GLPI: {type(e).__name__}: {e}"
+                )
+
+            if response.status_code == 403 and response_has_glpi_error(response, "ERROR_RIGHT_MISSING"):
+                raise GLPIRequestError(
+                    build_glpi_right_missing_message("Phone", response),
+                    response.status_code
+                )
+
+            if response.status_code not in (200, 206):
+                raise GLPIRequestError(
+                    f"GLPI Phone fetch error. HTTP {response.status_code} {response.reason}. Body: {get_response_text(response)}",
+                    response.status_code
+                )
+
+            try:
+                data = response.json()
+            except Exception as e:
+                raise GLPIRequestError(
+                    f"GLPI Phone zwrocilo niepoprawny JSON. HTTP {response.status_code}. Error: {e}. Body: {get_response_text(response)}",
+                    response.status_code
+                )
+
+            if isinstance(data, dict):
+                data = data.get("data") or data.get("items") or []
+
+            if not isinstance(data, list):
+                raise GLPIRequestError(f"GLPI Phone zwrocilo dziwny format: {type(data).__name__}")
+
+            phones.extend(data)
+
+            if len(data) < page_size or response.status_code == 200:
+                break
+
+            start += page_size
+
+            if start > 100000:
+                raise GLPIRequestError("Przerwano pobieranie telefonow GLPI: przekroczono 100000 rekordow")
+
+        return phones
+
+    finally:
+        kill_glpi_session(session_token)
+
+
+def sync_glpi_phones():
+    phones = fetch_glpi_phones()
+    count = replace_glpi_phones_cache(phones)
+    set_setting("glpi_phones_last_sync", str(time.time()))
+    return count
+
+
+def refresh_glpi_phones_cache():
+    # Reczne odswiezenie z panelu admina. Bledy leca wyzej, zeby panel je pokazal.
+    log("GLPI PHONE", "Pobieram telefony z GLPI do cache...")
+    count = sync_glpi_phones()
+    log("GLPI PHONE", f"Zaktualizowano cache telefonow GLPI. Zapisano: {count}")
+    return count
+
+
+def ensure_glpi_phones_fresh():
+    global GLPI_PHONES_RETRY_AFTER
+
+    now = time.time()
+
+    if now < GLPI_PHONES_RETRY_AFTER:
+        return
+
+    try:
+        last_sync = float(get_setting("glpi_phones_last_sync", "0") or 0)
+    except ValueError:
+        last_sync = 0.0
+
+    if now - last_sync < cfg.GLPI_PHONES_CACHE_TTL:
+        return
+
+    try:
+        count = sync_glpi_phones()
+        log("GLPI PHONE", f"Auto-sync telefonow OK (TTL={cfg.GLPI_PHONES_CACHE_TTL}s). W cache: {count}")
+    except Exception as e:
+        GLPI_PHONES_RETRY_AFTER = time.time() + 15
+        log("GLPI PHONE", f"Auto-sync telefonow FAIL: {type(e).__name__}: {e}. Uzywam ostatniego cache/config. Kolejna proba za 15s.")
+
+
+def get_glpi_phone_by_dn(dn):
+    short_dn = normalize_phone_dn(dn)
+
+    if not short_dn:
+        return None
+
+    ensure_glpi_phones_fresh()
+
+    try:
+        conn = db_connect()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT glpi_phone_id, dn, phone_name, glpi_user_id
+            FROM glpi_phones
+            WHERE dn = ?
+            LIMIT 1
+        ''', (short_dn,))
+
+        row = cursor.fetchone()
+        conn.close()
+
+    except sqlite3.Error as e:
+        log("GLPI PHONE", f"Blad odczytu glpi_phones z SQLite: {type(e).__name__}: {e}")
+        return None
+
+    if not row:
+        return None
+
+    return {
+        "glpi_phone_id": row[0],
+        "dn": row[1],
+        "phone_name": row[2],
+        "glpi_user_id": row[3],
+    }
+
+
+def resolve_phone_display_label(dn):
+    dn_clean = str(dn or "").strip()
+
+    if not dn_clean:
+        return ""
+
+    phone_entry = get_glpi_phone_by_dn(dn_clean)
+
+    if phone_entry and phone_entry.get("phone_name"):
+        return f"{dn_clean} ({phone_entry['phone_name']})"
+
+    fallback_name = cfg.PHONE_NAME_BY_FINAL_DN.get(dn_clean)
+    return f"{dn_clean} ({fallback_name})" if fallback_name else dn_clean
+
+
+# =========================
 # GLPI TICKETY
 # =========================
 
@@ -1544,10 +1885,8 @@ def get_ticket_caller_label(cdr):
 def build_missed_call_payload(cdr, location_id=None):
     title = f"Nieodebrane Polaczenie od {get_ticket_caller_label(cdr)}"
     
-    # Pobieramy numer końcowy i doklejamy imię technika/urządzenia z configu
-    final_dn = str(cdr.get("final_dn") or "").strip()
-    phone_name = cfg.PHONE_NAME_BY_FINAL_DN.get(final_dn)
-    final_label = f"{final_dn} ({phone_name})" if phone_name else final_dn
+    # Etykieta aparatu: numer + nazwa z GLPI (Zasoby -> Telefony), awaryjnie z configu
+    final_label = resolve_phone_display_label(cdr.get("final_dn"))
 
     content = (
         "Automatyczne zgloszenie utworzone na podstawie rekordu CDR z 3CX.\n\n"
@@ -1580,10 +1919,8 @@ def build_missed_call_payload(cdr, location_id=None):
 def build_answered_call_payload(cdr, owner_id, location_id=None):
     title = f"Polaczenie telefoniczne od {get_ticket_caller_label(cdr)}"
 
-    # Pobieramy numer końcowy i doklejamy imię technika/urządzenia z configu
-    final_dn = str(cdr.get("final_dn") or "").strip()
-    phone_name = cfg.PHONE_NAME_BY_FINAL_DN.get(final_dn)
-    final_label = f"{final_dn} ({phone_name})" if phone_name else final_dn
+    # Etykieta aparatu: numer + nazwa z GLPI (Zasoby -> Telefony), awaryjnie z configu
+    final_label = resolve_phone_display_label(cdr.get("final_dn"))
 
     content = (
         "Automatyczne zgloszenie utworzone na podstawie rekordu CDR z 3CX.\n\n"
@@ -1806,4 +2143,11 @@ def connect_to_3cx():
 
 if __name__ == "__main__":
     init_db()
+
+    # Rozgrzewka cache telefonow, zeby pierwsze polaczenie po starcie nie czekalo na GLPI.
+    try:
+        refresh_glpi_phones_cache()
+    except Exception as e:
+        log("GLPI PHONE", f"Start: nie udalo sie pobrac telefonow z GLPI: {type(e).__name__}: {e}. Uzywam cache/config.")
+
     connect_to_3cx()

@@ -660,7 +660,7 @@ def show_cdr_records(screen):
             glpi_location_id AS loc,
             glpi_error AS error
         FROM it_cdr
-        ORDER BY id
+        ORDER BY id DESC
     '''
 
     max_widths = {

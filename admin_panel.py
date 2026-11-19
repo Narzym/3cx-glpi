@@ -1,14 +1,15 @@
+import contextlib
 import curses
+import io
 import os
 import sqlite3
 import subprocess
 import textwrap
-import io
-import contextlib
-from collections import deque
+import time
 
 import config as cfg
-import cdr_to_glpi as core
+import db
+import glpi_cache
 
 
 COLOR_GREEN = 1
@@ -16,6 +17,10 @@ COLOR_RED = 2
 COLOR_YELLOW = 3
 COLOR_MAGENTA = 4
 COLOR_REVERSE = 5
+
+
+# Ile ostatnich linii pokazuje "Rozwin logi". Starsze sa w plikach rotacji (.log.1 ...).
+LOG_VIEW_MAX_LINES = 3000
 
 
 class ScreenExit(Exception):
@@ -57,13 +62,50 @@ def clear_terminal_after_exit():
     os.system("clear")
 
 
+# ---------------------------------------------------------------------------
+# Krotka pamiec podreczna (cache) dla rzeczy, ktore panel odswieza co sekunde.
+# Bez niej kazde odswiezenie ekranu odpalaloby podproces systemctl i kilka zapytan do bazy.
+# ---------------------------------------------------------------------------
+
+_TTL_CACHE = {}
+
+
+def cached_call(key, ttl_seconds, func):
+    """Zwraca wynik func(), ale liczy go najwyzej raz na ttl_seconds."""
+
+    now = time.monotonic()
+    hit = _TTL_CACHE.get(key)
+
+    if hit is not None and now - hit[0] < ttl_seconds:
+        return hit[1]
+
+    value = func()
+    _TTL_CACHE[key] = (now, value)
+    return value
+
+
+def invalidate_cache():
+    """Po kazdej akcji (start/stop uslugi, reset bazy...) chcemy swiezych danych od razu."""
+
+    _TTL_CACHE.clear()
+
+
+# "--no-ask-password" + stdin=DEVNULL: gdy panel uruchomi ktos bez uprawnien roota,
+# systemctl od razu zwroci blad zamiast wisiec do 30 s czekajac na haslo (polkit).
+SYSTEMCTL_BASE = ["systemctl", "--no-ask-password"]
+
+
 def is_service_running():
-    result = subprocess.run(
-        ["systemctl", "is-active", "--quiet", cfg.SERVICE_NAME],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-    return result.returncode == 0
+    def check():
+        result = subprocess.run(
+            SYSTEMCTL_BASE + ["is-active", "--quiet", cfg.SERVICE_NAME],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        return result.returncode == 0
+
+    return cached_call("service_running", 2.0, check)
 
 
 def get_service_status_label():
@@ -75,7 +117,8 @@ def get_service_status_label():
 
 def run_systemctl(action):
     result = subprocess.run(
-        ["systemctl", action, cfg.SERVICE_NAME],
+        SYSTEMCTL_BASE + [action, cfg.SERVICE_NAME],
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=30
@@ -99,7 +142,8 @@ def run_systemctl(action):
 
 def get_systemd_status_text():
     result = subprocess.run(
-        ["systemctl", "status", cfg.SERVICE_NAME, "--no-pager", "--lines=12"],
+        SYSTEMCTL_BASE + ["status", cfg.SERVICE_NAME, "--no-pager", "--lines=12"],
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=30
@@ -134,7 +178,7 @@ def draw_header(screen, subtitle=None, footer=True):
     safe_addstr(screen, 3, 3, "Status: ", curses.A_BOLD)
     safe_addstr(screen, 3, 11, status, attr)
 
-    stats = core.get_db_stats()
+    stats = cached_call("db_stats", 2.0, db.get_db_stats)
     stats_text = f"CDR: {stats['cdr_count']} | CDR limit: {stats['cdr_max_records']} | GLPI users cache: {stats['glpi_users_count']} | GLPI locations cache: {stats['glpi_locations_count']} | Service: {cfg.SERVICE_NAME}"
     safe_addstr(screen, 4, 3, stats_text, curses.color_pair(COLOR_YELLOW))
 
@@ -208,20 +252,76 @@ def is_basic_log_line(line):
     return any(marker in upper for marker in include_markers)
 
 
-def read_last_lines(path, max_lines=500):
+def read_last_lines(path, max_lines=500, block_size=65536):
+    """
+    Zwraca ostatnie max_lines linii pliku (kazda konczy sie "\n", jak przy czytaniu pliku).
+
+    Czyta plik OD KONCA w blokach, wiec koszt zalezy od liczby zadanych linii,
+    a nie od rozmiaru calego pliku (poprzednio czytalismy caly plik za kazdym razem).
+    """
+
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as file:
-            return list(deque(file, maxlen=max_lines))
+        with open(path, "rb") as file:
+            file.seek(0, os.SEEK_END)
+            position = file.tell()
+            data = b""
+
+            # Czytamy kolejne bloki od konca, az bedziemy miec wiecej znakow nowej linii niz trzeba
+            # (pierwsza, urwana w polowie linia i tak zostanie odrzucona).
+            while position > 0 and data.count(b"\n") <= max_lines:
+                step = min(block_size, position)
+                position -= step
+                file.seek(position)
+                data = file.read(step) + data
+
+        parts = data.split(b"\n")
+        ends_with_newline = parts[-1] == b""
+
+        if ends_with_newline:
+            parts = parts[:-1]
+
+        if position > 0:
+            parts = parts[1:]  # pierwszy fragment moze byc urwana linia
+
+        lines = [part.decode("utf-8", errors="replace") + "\n" for part in parts[-max_lines:]]
+
+        if lines and not ends_with_newline:
+            lines[-1] = lines[-1][:-1]
+
+        return lines
+
     except FileNotFoundError:
         return []
     except Exception as e:
         return [f"BLAD czytania logow: {type(e).__name__}: {e}\n"]
 
 
+_LIVE_FEED_CACHE = {"signature": None, "lines": []}
+
+
 def get_basic_live_feed_lines(max_lines=200):
+    """
+    Live feed odswieza sie co sekunde. Gdy plik logow sie nie zmienil
+    (ten sam czas modyfikacji i rozmiar), oddajemy poprzedni wynik bez czytania dysku.
+    """
+
+    try:
+        stat = os.stat(cfg.LOG_PATH)
+        signature = (stat.st_mtime_ns, stat.st_size, max_lines)
+    except OSError:
+        signature = None
+
+    if signature is not None and signature == _LIVE_FEED_CACHE["signature"]:
+        return _LIVE_FEED_CACHE["lines"]
+
     lines = read_last_lines(cfg.LOG_PATH, max_lines=max_lines * 5)
     filtered = [line.rstrip("\n") for line in lines if is_basic_log_line(line)]
-    return filtered[-max_lines:]
+    result = filtered[-max_lines:]
+
+    _LIVE_FEED_CACHE["signature"] = signature
+    _LIVE_FEED_CACHE["lines"] = result
+
+    return result
 
 
 def prepare_display_lines(raw_lines, content_width, colorize_logs=False, wrap=True):
@@ -377,6 +477,7 @@ def prompt_text(screen, title, question, default=""):
 
 
 def run_action_and_show(screen, title, func):
+    invalidate_cache()
     screen.clear()
     draw_header(screen, title)
     safe_addstr(screen, 8, 4, "Wykonuje akcje...", curses.color_pair(COLOR_YELLOW) | curses.A_BOLD)
@@ -408,6 +509,10 @@ def run_action_and_show(screen, title, func):
 
         show_text(screen, title, message)
 
+    finally:
+        # Po akcji (np. reset bazy, start/stop uslugi) pokaz od razu swieze dane.
+        invalidate_cache()
+
 
 def run_systemctl_and_show(screen, action):
     def do_action():
@@ -424,21 +529,21 @@ def toggle_service(screen):
 
 def reset_cdr_db(screen):
     if confirm(screen, "Na pewno wyzerowac baze polaczen it_cdr? To tez przebuduje tabele na nowy schemat CDR."):
-        run_action_and_show(screen, "Wyzeruj baze polaczen", core.reset_it_cdr)
+        run_action_and_show(screen, "Wyzeruj baze polaczen", db.reset_it_cdr)
 
 
 def reset_glpi_users_db(screen):
     if confirm(screen, "Na pewno wyzerowac cache userow GLPI? To tez przebuduje tabele."):
-        run_action_and_show(screen, "Wyzeruj baze userow GLPI", core.reset_glpi_users)
+        run_action_and_show(screen, "Wyzeruj baze userow GLPI", db.reset_glpi_users)
 
 
 def reset_glpi_locations_db(screen):
     if confirm(screen, "Na pewno wyzerowac cache lokalizacji GLPI? To tez przebuduje tabele."):
-        run_action_and_show(screen, "Wyzeruj baze lokalizacji GLPI", core.reset_glpi_locations)
+        run_action_and_show(screen, "Wyzeruj baze lokalizacji GLPI", db.reset_glpi_locations)
 
 
 def set_cdr_limit(screen):
-    current = core.get_cdr_max_records_label()
+    current = db.get_cdr_max_records_label()
     value = prompt_text(
         screen,
         "Limit bazy polaczen",
@@ -447,31 +552,31 @@ def set_cdr_limit(screen):
     )
 
     def do_action():
-        new_value = core.set_cdr_max_records(value)
+        new_value = db.set_cdr_max_records(value)
         return f"Nowy limit: {new_value}"
 
     run_action_and_show(screen, "Ustaw limit CDR", do_action)
 
 
 def refresh_glpi_users(screen):
-    run_action_and_show(screen, "Update bazy userow GLPI", core.refresh_glpi_users_cache)
+    run_action_and_show(screen, "Update bazy userow GLPI", glpi_cache.refresh_glpi_users_cache)
 
 
 def refresh_glpi_locations(screen):
-    run_action_and_show(screen, "Update bazy lokalizacji GLPI", core.refresh_glpi_locations_cache)
+    run_action_and_show(screen, "Update bazy lokalizacji GLPI", glpi_cache.refresh_glpi_locations_cache)
 
 
 def refresh_glpi_phones(screen):
-    run_action_and_show(screen, "Update przypisan telefonow GLPI", core.refresh_glpi_phones_cache)
+    run_action_and_show(screen, "Update przypisan telefonow GLPI", glpi_cache.refresh_glpi_phones_cache)
 
 
 def reset_glpi_phones_db(screen):
     if confirm(screen, "Na pewno wyzerowac cache telefonow GLPI? Przypisania pobiora sie ponownie przy najblizszym polaczeniu."):
-        run_action_and_show(screen, "Wyzeruj cache telefonow GLPI", core.reset_glpi_phones)
+        run_action_and_show(screen, "Wyzeruj cache telefonow GLPI", db.reset_glpi_phones)
 
 
 def show_db_stats(screen):
-    stats = core.get_db_stats()
+    stats = db.get_db_stats()
     text = (
         f"Baza SQLite: {cfg.DB_PATH}\n"
         f"Rekordy CDR: {stats['cdr_count']}\n"
@@ -519,12 +624,10 @@ def format_sql_table(headers, rows, max_widths=None):
 
 def query_sqlite(query, max_widths=None, show_query=True):
     try:
-        conn = sqlite3.connect(cfg.DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute(query)
-        rows = cursor.fetchall()
-        headers = [description[0] for description in cursor.description]
-        conn.close()
+        with db.db_session() as conn:
+            cursor = conn.execute(query)
+            rows = cursor.fetchall()
+            headers = [description[0] for description in cursor.description]
 
         header = f"Liczba rekordow: {len(rows)}\n\n"
         if show_query:
@@ -533,11 +636,6 @@ def query_sqlite(query, max_widths=None, show_query=True):
         return header + format_sql_table(headers, rows, max_widths=max_widths)
 
     except sqlite3.Error as e:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
         text = f"BLAD SQLite: {type(e).__name__}: {e}\n\nNajpewniej tabela ma stary schemat albo jeszcze nie istnieje. Wyzeruj/odswiez odpowiednia baze z menu."
         if show_query:
             text = f"Query: {query}\n" + text
@@ -617,11 +715,16 @@ def show_logs(screen):
     if not os.path.exists(path):
         text = f"Plik logow nie istnieje: {path}"
     else:
-        with open(path, "r", encoding="utf-8", errors="replace") as file:
-            content = file.read()
+        max_lines = LOG_VIEW_MAX_LINES
+        lines = read_last_lines(path, max_lines=max_lines)
+        size_kb = os.path.getsize(path) // 1024
 
-        line_count = len(content.splitlines())
-        text = f"Plik logow: {path}\nPokazuje caly plik: {line_count} linii.\n\n" + content
+        text = (
+            f"Plik logow: {path} ({size_kb} KB)\n"
+            f"Pokazuje ostatnie {len(lines)} linii (limit {max_lines}). "
+            f"Starsze wpisy sa w plikach {os.path.basename(path)}.1, .2 ...\n\n"
+            + "".join(lines)
+        )
 
     show_scrollable_text(screen, "Rozwin logi", text, start_bottom=True, colorize_logs=True, wrap=True)
 
@@ -794,7 +897,7 @@ LOG_OPTIONS_MENU = [
 
 
 def log_option_label_parts(key, label):
-    enabled = core.is_verbose_log_enabled(key)
+    enabled = db.is_verbose_log_enabled(key)
 
     if enabled:
         status = "[wlaczone]"
@@ -811,7 +914,7 @@ def log_option_label_parts(key, label):
 
 def make_toggle_log_option_handler(key):
     def handler(screen):
-        core.toggle_log_option(key)
+        db.toggle_log_option(key)
         return None
 
     return handler
@@ -907,7 +1010,7 @@ def cdr_db_menu_items():
             "handler": reset_cdr_db
         },
         {
-            "label": lambda: f"Ile rekordow max: {core.get_cdr_max_records_label()}",
+            "label": lambda: f"Ile rekordow max: {db.get_cdr_max_records_label()}",
             "handler": set_cdr_limit
         },
         {
@@ -996,7 +1099,7 @@ def curses_main(screen):
     curses.init_pair(COLOR_MAGENTA, primary_magenta, -1)
     curses.init_pair(COLOR_REVERSE, curses.COLOR_WHITE, primary_magenta)
 
-    core.init_db()
+    db.init_db()
 
     try:
         menu_loop(screen, "Menu glowne", main_menu_items, live_feed=True)

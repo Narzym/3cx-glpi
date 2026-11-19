@@ -134,6 +134,21 @@ MISSED_CALL_FINAL_DNS = expand_with_prefix(IT_NUMBERS_BASE)
 MISSED_CALL_TO_NUMBERS = MISSED_CALL_FINAL_DNS
 
 # =========================
+# Jeśli FINAL-DN: None -> ticket bez realizatora (lub numer kolejkowy)
+
+#Ustawienie Tygodniowe
+OWNER_BY_FINAL_DN_BASE = {
+    "517": None,    # Kolejka IT
+    "519": None,    # SAMSUNG
+    "520": None,    # NOKIA
+    "521": None,    # SONY ERICSSON
+#   "524": None,    # Zagubiony
+    "526": None,    # XIAOMI
+    "528": None,    # IPHONE
+    "529": None,    # HUAWEI
+    "699": None,    # Kolejka z sal wykładowych
+}
+
 PHONE_NAME_BY_FINAL_DN_BASE = {
     "519": "SAMSUNG",
     "520": "NOKIA",

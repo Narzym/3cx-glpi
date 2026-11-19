@@ -9,10 +9,23 @@ load_dotenv()
 # =========================
 
 APP_NAME = "3cxToGLPI"
-APP_VERSION = "1.19"
+APP_VERSION = "2.0"
 SERVICE_NAME = os.getenv("SERVICE_NAME", "cdr_to_glpi.service")
 DB_PATH = os.getenv("DB_PATH", "cdrdatabase.db")
 LOG_PATH = os.getenv("LOG_PATH", "logs/cdr_to_glpi.log")
+
+# Rotacja pliku logow: po przekroczeniu LOG_MAX_BYTES plik jest przesuwany na .log.1,
+# starsze kopie na .2, .3 ... Zostaje maksymalnie LOG_BACKUP_COUNT kopii (0 = bez kopii).
+# Maksymalne zuzycie dysku to w przyblizeniu LOG_MAX_BYTES * (LOG_BACKUP_COUNT + 1).
+# LOG_MAX_BYTES=0 wylacza rotacje.
+LOG_MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", str(5 * 1024 * 1024)))
+LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", "5"))
+
+# Baza SQLite: tryb WAL pozwala panelowi czytac baze w trakcie zapisu przez usluge.
+# Awaryjnie mozna wrocic do klasycznego trybu przez DB_JOURNAL_MODE=DELETE w .env.
+DB_JOURNAL_MODE = os.getenv("DB_JOURNAL_MODE", "WAL")
+# Ile sekund czekac, gdy baza jest chwilowo zajeta, zamiast od razu bledu "database is locked".
+DB_BUSY_TIMEOUT_SECONDS = float(os.getenv("DB_BUSY_TIMEOUT_SECONDS", "10"))
 
 # Wartosc moze byc liczba >= 10 albo "unlimited".
 CDR_MAX_RECORDS_DEFAULT = os.getenv("CDR_MAX_RECORDS_DEFAULT", "500")
@@ -83,6 +96,12 @@ GLPI_API_URL = os.getenv("GLPI_API_URL")
 GLPI_APP_TOKEN = os.getenv("GLPI_APP_TOKEN")
 GLPI_USER_TOKEN = os.getenv("GLPI_USER_TOKEN")
 GLPI_HTTP_TIMEOUT = int(os.getenv("GLPI_HTTP_TIMEOUT", "15"))
+# Limit na samo nawiazanie polaczenia z GLPI (krotszy, bo zdrowy serwer odpowiada od razu).
+GLPI_HTTP_CONNECT_TIMEOUT = int(os.getenv("GLPI_HTTP_CONNECT_TIMEOUT", "5"))
+# Ile razy ponowic zapytanie po chwilowym bledzie (502/503/504, zerwane polaczenie).
+# Dotyczy GET. Tworzenie ticketu (POST) jest ponawiane tylko gdy nie udalo sie nawiazac polaczenia.
+GLPI_HTTP_RETRIES = int(os.getenv("GLPI_HTTP_RETRIES", "2"))
+GLPI_HTTP_BACKOFF = float(os.getenv("GLPI_HTTP_BACKOFF", "0.5"))
 GLPI_USER_PAGE_SIZE = int(os.getenv("GLPI_USER_PAGE_SIZE", "200"))
 GLPI_LOCATION_PAGE_SIZE = int(os.getenv("GLPI_LOCATION_PAGE_SIZE", "200"))
 GLPI_PHONE_PAGE_SIZE = int(os.getenv("GLPI_PHONE_PAGE_SIZE", "200"))
@@ -131,7 +150,6 @@ OWNER_BY_FINAL_DN_BASE = {
 }
 
 PHONE_NAME_BY_FINAL_DN_BASE = {
-    "517": "Kolejka IT",
     "519": "SAMSUNG",
     "520": "NOKIA",
     "521": "SONY ERICSSON",
@@ -139,6 +157,8 @@ PHONE_NAME_BY_FINAL_DN_BASE = {
     "526": "XIAOMI",
     "528": "IPHONE 18 PRO MAX 10TB",
     "529": "HUAWEI",
+    
+    "517": "Kolejka IT",
     "699": "Kolejka z sal wykładowych"
 }
 
@@ -151,6 +171,24 @@ PHONE_NAME_BY_FINAL_DN_BASE = {
 # Janek ID: 17
 # Dominik ID: 959
 # Julian ID: 1037
+
+
+# Jeśli FINAL-DN: None -> ticket bez realizatora (lub numer kolejkowy)
+
+# Stare przypisanie do techników, używane jako fallback, gdy telefon nie jest w GLPI (np. SAMSUNG/NOKIA) albo cache pusty i GLPI niedostępne.
+OWNER_BY_FINAL_DN_BASE = {
+    "519": None,    # SAMSUNG
+    "520": None,    # NOKIA
+    "521": 1043,    # Alexander SONY ERICSSON
+#   "524": None,    # Zagubiony
+    "526": 32,      # Mateusz XIAOMI
+    "528": 1040,    # Borys IPHONE
+    "529": None,    # HUAWEI
+# ========= Kolejki zostawić w spokoju ========= #
+    "517": None,    # Kolejka IT
+    "699": None,    # Kolejka z sal wykładowych
+}
+
 
 
 # Automatyczne rozszerzenie o pełne numery z prefiksem (np. 225435521)

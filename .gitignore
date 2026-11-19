@@ -1,8 +1,11 @@
 .env
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 *.log
+*.log.*
 logs/
 __pycache__/
 *.pyc

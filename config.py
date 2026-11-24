@@ -142,7 +142,7 @@ OWNER_BY_FINAL_DN_BASE = {
     "519": None,    # SAMSUNG
     "520": None,    # NOKIA
     "521": None,    # SONY ERICSSON
-#   "524": None,    # Zagubiony
+    "524": None,    # Mati
     "526": None,    # XIAOMI
     "528": None,    # IPHONE
     "529": None,    # HUAWEI
@@ -153,7 +153,7 @@ PHONE_NAME_BY_FINAL_DN_BASE = {
     "519": "SAMSUNG",
     "520": "NOKIA",
     "521": "SONY ERICSSON",
-#   "524": "NOTHING", # Zagubiony
+    "524": "BLACKBERRY",
     "526": "XIAOMI",
     "528": "IPHONE 18 PRO MAX 10TB",
     "529": "HUAWEI",
@@ -180,7 +180,7 @@ OWNER_BY_FINAL_DN_BASE = {
     "519": None,    # SAMSUNG
     "520": None,    # NOKIA
     "521": 1043,    # Alexander SONY ERICSSON
-#   "524": None,    # Zagubiony
+    "524": None,    # BLACKBERRY
     "526": 32,      # Mateusz XIAOMI
     "528": 1040,    # Borys IPHONE
     "529": None,    # HUAWEI
